@@ -1,6 +1,6 @@
 [package]
 name = "passman"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["sharnoff <github@max.sharnoff.org>"]
 edition = "2018"
 description = "A simple terminal-based password manager"
@@ -13,11 +13,13 @@ aes-soft = "0.3"
 block-modes = "0.3"
 sha2 = "0.8"
 clap = { version = "2", features = ["yaml"] }
-crossterm = "0.17"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
 fuzzy-matcher = "0.3"
 chrono = "0.4"
+termion = "1.5"
+tui = "0.10.0"
+rpassword = "5.0"
 
 [profile.release]
 panic = "abort"

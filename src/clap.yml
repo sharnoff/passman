@@ -1,12 +1,12 @@
 name: passman
-version: "0.1"
+version: "0.2"
 author: Max Sharnoff <passman@max.sharnoff.org>
 about: A simple password manager
 
 args:
     - new:
-        long: new
-        help: Indicates to create a new associated file
+       long: new
+       help: Indicates to create a new associated file
     - FILE:
         help: Sets the file to read from
         required: true
