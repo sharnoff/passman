@@ -1,6 +1,6 @@
 [package]
 name = "passman"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["sharnoff <github@max.sharnoff.org>"]
 edition = "2018"
 description = "A simple terminal-based password manager"
