@@ -267,7 +267,7 @@ impl App {
 
         match key {
             Key::Backspace => {
-                drop(value.pop());
+                value.pop();
 
                 if is_search {
                     App::set_filter(
@@ -734,7 +734,12 @@ impl App {
             "q!" | "quit!" | "q(uit)!" => return false,
 
             // Write
-            "w" | "write" | "w(rite)" => drop(self.write(return_to_main)),
+            "w" | "write" | "w(rite)" => {
+                // We're fine dropping the `Result` here because it's mostly given as an external
+                // indicator of whether the writing was successful - all of the failure logic is
+                // handled in `write`
+                let _ = self.write(return_to_main);
+            }
 
             // Write-quit
             "wq" => {
@@ -888,7 +893,7 @@ impl App {
         let decrypted_token = crypt::decrypt_with(&key, cipher_token, iv);
 
         if let Some(t) = decrypted_token {
-            if &t == &crate::ENCRYPT_TOKEN.as_bytes() {
+            if t == crate::ENCRYPT_TOKEN.as_bytes() {
                 self.key = Some(key);
                 match return_to_main {
                     true => self.selected = SelectState::Main,

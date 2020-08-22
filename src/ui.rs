@@ -504,7 +504,7 @@ fn render_popup(
         .iter()
         .map(|line| line.len())
         .max()
-        .unwrap_or(header.len());
+        .unwrap_or_else(|| header.len());
     let width = max_length as u16 + 2;
 
     let horiz_margin = total_rect.width.saturating_sub(width) / 2;
