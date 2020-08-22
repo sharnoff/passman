@@ -734,11 +734,11 @@ impl App {
             "q!" | "quit!" | "q(uit)!" => return false,
 
             // Write
-            "w" | "write" | "w(rite)" => drop(self.write()),
+            "w" | "write" | "w(rite)" => drop(self.write(return_to_main)),
 
             // Write-quit
             "wq" => {
-                if let Ok(()) = self.write() {
+                if let Ok(()) = self.write(return_to_main) {
                     return false;
                 }
             }
@@ -839,7 +839,7 @@ impl App {
 
     /// Attempt to write the content of `self.entries` to the loaded file, producing a pop-up if
     /// it fails
-    fn write(&mut self) -> Result<(), ()> {
+    fn write(&mut self, return_to_main: bool) -> Result<(), ()> {
         // Try to open the file
         let res = File::create(&self.file_name).and_then(|mut f| {
             let s = serde_yaml::to_string(&self.entries).unwrap();
@@ -849,6 +849,10 @@ impl App {
         match res {
             Ok(()) => {
                 self.unsaved = false;
+                self.selected = match return_to_main {
+                    true => SelectState::Main,
+                    false => SelectState::Entries,
+                };
                 Ok(())
             }
             Err(e) => {
