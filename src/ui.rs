@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::text::{Span, Spans};
-use tui::widgets::{Block, Borders, Paragraph};
+use tui::widgets::{self, Block, Borders, Paragraph};
 
 type Frame<'a> = tui::terminal::Frame<'a, Backend>;
 
@@ -531,5 +531,6 @@ fn render_popup(
         )
         .alignment(Alignment::Left);
 
+    f.render_widget(widgets::Clear, horiz[1]);
     f.render_widget(paragraph, horiz[1]);
 }
