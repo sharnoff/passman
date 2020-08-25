@@ -18,8 +18,10 @@ serde_yaml = "0.8"
 fuzzy-matcher = "0.3"
 chrono = "0.4"
 termion = "1.5"
+textwrap = "0.12"
 tui = "0.10.0"
 rpassword = "5.0"
+
 
 [profile.release]
 panic = "abort"

@@ -485,11 +485,13 @@ fn render_popup(
     message: &[String],
     border_color: Color,
 ) {
+    ////////////////////////////////////////////////////////////////////////////////
+    // Step 1: Compute the internal area of the popup                             //
+    ////////////////////////////////////////////////////////////////////////////////
+
     // +2 for borders, plus one for each line in `message`
     let height = message.len() as u16 + 2;
-
     let vert_margin = total_rect.height.saturating_sub(height) / 2;
-
     let vert = vertical_chunks(
         total_rect,
         vec![
@@ -506,9 +508,7 @@ fn render_popup(
         .max()
         .unwrap_or_else(|| header.len());
     let width = max_length as u16 + 2;
-
     let horiz_margin = total_rect.width.saturating_sub(width) / 2;
-
     let horiz = horizontal_chunks(
         vert[1],
         vec![
@@ -518,8 +518,17 @@ fn render_popup(
         ],
     );
 
+    // `rect` gives the final region for the pop-up
+    let rect = horiz[1];
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Step 2: Render the pop-up into the given area                              //
+    ////////////////////////////////////////////////////////////////////////////////
+
     let text = message
         .iter()
+        .map(|line| textwrap::wrap_iter(line, rect.width.saturating_sub(2) as usize))
+        .flatten()
         .map(|line| Spans::from(Span::raw(line)))
         .collect::<Vec<_>>();
     let paragraph = Paragraph::new(text)
@@ -531,6 +540,6 @@ fn render_popup(
         )
         .alignment(Alignment::Left);
 
-    f.render_widget(widgets::Clear, horiz[1]);
-    f.render_widget(paragraph, horiz[1]);
+    f.render_widget(widgets::Clear, rect);
+    f.render_widget(paragraph, rect);
 }
