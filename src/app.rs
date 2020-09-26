@@ -160,7 +160,7 @@ impl App {
             Ok(inp) => inp,
         };
 
-        let entries = match serde_yaml::from_str(&input) {
+        let entries: Entries = match serde_yaml::from_str(&input) {
             Ok(es) => es,
             Err(e) => {
                 eprintln!("Failed to deserialize yaml file {:?}: {}", file, e);
@@ -168,7 +168,7 @@ impl App {
             }
         };
 
-        Some(Ok(App {
+        let mut app = App {
             entries,
             selected: SelectState::Entries,
             key: None,
@@ -181,7 +181,11 @@ impl App {
             main_selected: EntrySelectState::Name,
             search_filter: None,
             displayed_entry_idx: None,
-        }))
+        };
+
+        app.update_displayed_entry();
+
+        Some(Ok(app))
     }
 
     fn create_new(file_name: &str) -> Result<(), Option<io::Error>> {
@@ -276,6 +280,7 @@ impl App {
                         Some(value.clone()),
                         &self.entries.inner,
                     );
+                    self.update_displayed_entry();
                 }
             }
             Key::Char('\n') => match kind {
@@ -372,6 +377,7 @@ impl App {
                         Some(value.clone()),
                         &self.entries.inner,
                     );
+                    self.update_displayed_entry();
                 }
             }
             Key::Esc => match kind {
@@ -385,6 +391,9 @@ impl App {
                         previous.clone(),
                         &self.entries.inner,
                     );
+                    let return_to_main = *return_to_main;
+                    self.displayed_entry_idx = self.sidebar_selected_entry();
+
                     match return_to_main {
                         true => self.selected = SelectState::Main,
                         false => self.selected = SelectState::Entries,
@@ -412,7 +421,13 @@ impl App {
         let entry = self.displayed_entry_idx.map(|i| &self.entries.inner[i]);
 
         match cmd {
-            Cmd::Left => self.selected = SelectState::Entries,
+            Cmd::Left => {
+                if let Some(i) = self.sidebar_selected_entry() {
+                    self.displayed_entry_idx = Some(i);
+                }
+
+                self.selected = SelectState::Entries;
+            }
             Cmd::Right => (),
             Cmd::Down | Cmd::Up | Cmd::Select if entry.is_none() => (),
             Cmd::Down => {
@@ -594,7 +609,9 @@ impl App {
 
         match cmd {
             Cmd::Left => (),
-            Cmd::Right => self.selected = SelectState::Main,
+            Cmd::Right => {
+                self.selected = SelectState::Main;
+            }
             Cmd::Down | Cmd::Up | Cmd::ScrollDown | Cmd::ScrollUp if num_items == 0 => (),
             Cmd::Down => {
                 if self.start_entries_row + self.selected_entries_row >= num_items - 1 {
@@ -607,6 +624,7 @@ impl App {
                 } else {
                     self.start_entries_row += 1;
                 }
+                self.displayed_entry_idx = self.sidebar_selected_entry();
             }
             Cmd::Up => {
                 if self.start_entries_row == 0 && self.selected_entries_row == 0 {
@@ -618,6 +636,7 @@ impl App {
                 } else {
                     self.selected_entries_row -= 1;
                 }
+                self.displayed_entry_idx = self.sidebar_selected_entry();
             }
             Cmd::ScrollUp => {
                 if self.start_entries_row == 0 {
@@ -656,15 +675,12 @@ impl App {
             }
             Cmd::Quit => return !self.try_quit(),
             Cmd::Select => {
-                let idx = self.selected_entries_row + self.start_entries_row;
-
-                let entry_idx = match self.filter.as_ref() {
-                    Some(v) if v.is_empty() => return true,
-                    Some(list) => list[idx],
-                    None => idx,
+                let idx = match self.sidebar_selected_entry() {
+                    None => return true,
+                    Some(i) => i,
                 };
 
-                self.displayed_entry_idx = Some(entry_idx);
+                self.displayed_entry_idx = Some(idx);
                 self.selected = SelectState::Main;
                 self.main_selected = EntrySelectState::Name;
             }
@@ -808,6 +824,52 @@ impl App {
         }
 
         true
+    }
+
+    // Returns the entry index of the currently selected entry in the sidebar on the left --
+    // independent of what may displayed inside of the
+    fn sidebar_selected_entry(&self) -> Option<usize> {
+        let idx = self.selected_entries_row + self.start_entries_row;
+
+        match self.filter.as_ref() {
+            Some(list) => list.get(idx).cloned(),
+            None if idx >= self.entries.inner.len() => None,
+            None => Some(idx),
+        }
+    }
+
+    /// Updates the index of the currently displayed entry in accordance with the values available
+    /// within the sidebar
+    fn update_displayed_entry(&mut self) {
+        // The maximum index, plus one -- i.e. an exclusive upper bound
+        let max_idx = self
+            .filter
+            .as_ref()
+            .map(|filter| filter.len())
+            .unwrap_or_else(|| self.entries.inner.len());
+        let current_idx = self.start_entries_row + self.selected_entries_row;
+
+        // If the maximum index is zero, we can't have a selected entry to display
+        let max_idx = match max_idx.checked_sub(1) {
+            Some(i) => i,
+            None => {
+                self.start_entries_row = 0;
+                self.selected_entries_row = 0;
+                self.displayed_entry_idx = None;
+                return;
+            }
+        };
+
+        if current_idx > max_idx {
+            let diff = current_idx - max_idx;
+            let new_start = self.start_entries_row.saturating_sub(diff);
+            let remaining_diff = diff - (self.start_entries_row - new_start);
+
+            self.start_entries_row = new_start;
+            self.selected_entries_row = self.selected_entries_row - remaining_diff;
+        }
+
+        self.displayed_entry_idx = self.sidebar_selected_entry();
     }
 
     fn set_filter(
