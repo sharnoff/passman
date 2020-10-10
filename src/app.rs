@@ -585,6 +585,8 @@ impl App {
                         }
                     }
                 }
+
+                self.unsaved = true;
             }
 
             // Add a field
