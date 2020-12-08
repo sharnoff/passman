@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Local};
 use serde::{de::Error, de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
+use std::borrow::Cow;
 use std::fmt;
 use std::time::SystemTime;
 
@@ -58,4 +59,11 @@ pub fn comma_strings<S: AsRef<str>>(strs: &[S]) -> String {
         result.push_str(s.as_ref());
     }
     result
+}
+
+pub fn escape_quotes(s: &str) -> Cow<str> {
+    match s.contains('"') {
+        true => Cow::Owned(s.replace('"', "\"")),
+        false => Cow::Borrowed(s),
+    }
 }

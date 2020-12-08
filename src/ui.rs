@@ -269,7 +269,7 @@ fn render_main(f: &mut Frame, rect: Rect, app: &App) {
     text.push(styled(
         "",
         "Entry name: ",
-        format!("{:?}", entry.name),
+        format!("\"{}\"", utils::escape_quotes(&entry.name)),
         selected == Some(Name),
     ));
     text.push(styled(
@@ -318,7 +318,10 @@ fn render_main(f: &mut Frame, rect: Rect, app: &App) {
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
-                .title(format!("Selected {:?}", entry.name))
+                .title(format!(
+                    "Selected \"{}\"",
+                    utils::escape_quotes(&entry.name)
+                ))
                 .borders(Borders::ALL)
                 .border_style(style),
         )
