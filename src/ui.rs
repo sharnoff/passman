@@ -1,16 +1,25 @@
-//! Display handling for application state
+//! Displays the current state of the `App`
 
-use crate::app::{App, CommandKind, EntrySelectState, SelectState, Value};
+use crate::app::{App, CommandKind, EntrySelectState, SelectState};
 use crate::utils;
-use crate::{Backend, Terminal};
-use std::io;
-use std::sync::atomic::Ordering::SeqCst;
+use std::io::{self, Stdout};
+use std::sync::atomic::Ordering::Release;
+use termion::raw::{IntoRawMode, RawTerminal};
+use tui::backend::TermionBackend;
 use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::text::{Span, Spans};
 use tui::widgets::{self, Block, Borders, Paragraph};
 
+type Backend = TermionBackend<RawTerminal<Stdout>>;
+type Terminal = tui::Terminal<Backend>;
 type Frame<'a> = tui::terminal::Frame<'a, Backend>;
+
+pub const WARNING_COLOR: Color = Color::Yellow;
+pub const ERROR_COLOR: Color = Color::Red;
+pub const INFO_COLOR: Color = Color::Blue;
+
+pub static PROTECTED_STR: &str = "<Protected>";
 
 const SELECT_STYLE: Style = Style {
     fg: Some(Color::Blue),
@@ -26,7 +35,18 @@ const fn default_style() -> Style {
     }
 }
 
-pub fn draw(term: &mut Terminal, app: &App) -> Result<(), io::Error> {
+/// Performs the necessary setup for drawing to the screen
+///
+/// This should only be run once and before ever calling [`draw`].
+pub fn setup_term() -> io::Result<Terminal> {
+    let stdout = io::stdout().into_raw_mode()?;
+    let backend = TermionBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    Ok(terminal)
+}
+
+pub fn draw(term: &mut Terminal, app: &App) -> io::Result<()> {
     term.draw(|mut f| {
         // The general layout of the UI can be represented by this diagram:
         //   +-----+---------------------------------+-----+
@@ -102,7 +122,7 @@ fn horizontal_chunks(rect: Rect, constraints: Vec<Constraint>) -> Vec<Rect> {
 }
 
 fn render_entries(f: &mut Frame, rect: Rect, app: &App) {
-    let title = match app.search_filter.as_ref() {
+    let title = match app.search_term.as_ref() {
         None => "Entries".into(),
         Some(filter) => format!("Entries // '{}'", filter),
     };
@@ -121,10 +141,10 @@ fn render_entries(f: &mut Frame, rect: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_style(style);
 
-    let entries_list: Vec<_> = match app.filter.as_ref() {
-        // If there's no filter, we can just provide the entries as is
-        None => app.entries.inner[start_row..].iter().collect(),
-        Some(list) => list.iter().map(|&i| &app.entries.inner[i]).collect(),
+    let num_entries = app.entries.num_entries();
+    let entries_list = match app.filter.as_ref() {
+        None => app.entries.entries_range(start_row..num_entries),
+        Some(list) => list.iter().map(|&i| app.entries.entry(i)).collect(),
     };
 
     // If there's no available entries, we should display something to indicate that this
@@ -143,7 +163,7 @@ fn render_entries(f: &mut Frame, rect: Rect, app: &App) {
     }
 
     let text: Vec<_> = entries_list
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(i, e)| {
             let style = match selected_row == Some(i) {
@@ -151,7 +171,7 @@ fn render_entries(f: &mut Frame, rect: Rect, app: &App) {
                 false => Style::default(),
             };
 
-            Spans::from(Span::styled(&e.name, style))
+            Spans::from(Span::styled(e.name(), style))
         })
         .collect();
 
@@ -160,7 +180,7 @@ fn render_entries(f: &mut Frame, rect: Rect, app: &App) {
 
     // We subtract 2 from the height because it has borders on both sides
     if let Some(height) = rect.height.checked_sub(2) {
-        app.last_entries_height.store(height as usize, SeqCst);
+        app.last_entries_height.store(height as usize, Release);
     }
 }
 
@@ -222,7 +242,7 @@ fn render_main(f: &mut Frame, rect: Rect, app: &App) {
     };
 
     let entry = match app.displayed_entry_idx {
-        Some(idx) => &app.entries.inner[idx],
+        Some(idx) => app.entries.entry(idx),
         None => {
             // If there's no entry selected, we'll just display that there isn't one
             let block = Block::default()
@@ -265,53 +285,60 @@ fn render_main(f: &mut Frame, rect: Rect, app: &App) {
 
     use crate::app::EntrySelectState::{Field, Name, Plus, Tags};
 
-    let mut text = Vec::with_capacity(entry.fields.len() + 5);
+    let mut text = Vec::with_capacity(entry.num_fields() + 5);
     text.push(styled(
         "",
         "Entry name: ",
-        format!("\"{}\"", utils::escape_quotes(&entry.name)),
+        format!("\"{}\"", utils::escape_quotes(entry.name())),
         selected == Some(Name),
     ));
     text.push(styled(
         "",
         "Tags: ",
-        utils::comma_strings(&entry.tags),
+        utils::comma_strings(&entry.tags()),
         selected == Some(Tags),
     ));
 
-    for (idx, field) in entry.fields.iter().enumerate() {
+    for idx in 0..entry.num_fields() {
         let is_selected = selected == Some(Field { idx });
-        let value = match (&field.value, is_selected) {
-            (Value::Protected(_), false) => "<Protected>".into(),
-            _ => field
-                .value
-                .format(app.key.as_ref(), app.entries.iv.as_ref()),
+        let is_protected = entry.field_protected(idx);
+
+        let field_value = entry.field_value(idx);
+
+        // Only display values if they're unprotected OR protected and selected
+        let value = match (is_protected, is_selected, field_value) {
+            (true, true, Ok(v)) => v,
+            (true, true, Err(())) | (true, false, _) => "<Protected>".to_owned(),
+            (false, _, res) => res.unwrap(),
         };
 
-        let prefix = match field.value {
-            Value::Basic(_) => "  ",
-            Value::Protected(_) => "🔒",
+        let prefix = match is_protected {
+            false => "  ",
+            true => "🔒",
         };
 
         text.push(styled(
             prefix,
-            format!("{}: ", field.name),
+            format!("{}: ", entry.field_name(idx)),
             value,
-            selected == Some(Field { idx }),
+            is_selected,
         ));
     }
 
     text.push(styled("", "", "[+]", selected == Some(Plus)));
     text.push(Spans::from(Span::raw("")));
 
+    let first_added = entry.first_added();
+    let last_update = entry.last_update();
+
     text.push(Spans::from(Span::raw(format!(
         "First added: {}",
-        utils::format_time(entry.first_added)
+        utils::format_time(first_added)
     ))));
-    if entry.last_update != entry.first_added {
+    if last_update != first_added {
         text.push(Spans::from(Span::raw(format!(
             "Last updated: {}",
-            utils::format_time(entry.last_update)
+            utils::format_time(last_update)
         ))));
     }
 
@@ -320,7 +347,7 @@ fn render_main(f: &mut Frame, rect: Rect, app: &App) {
             Block::default()
                 .title(format!(
                     "Selected \"{}\"",
-                    utils::escape_quotes(&entry.name)
+                    utils::escape_quotes(entry.name())
                 ))
                 .borders(Borders::ALL)
                 .border_style(style),
@@ -341,8 +368,8 @@ fn render_status(f: &mut Frame, rect: Rect, app: &App) {
         }
     }
 
-    let decrypted = format!("{} Decrypted", status_char(app.key.is_some()));
-    let unsaved = format!("{} Unsaved", status_char(app.unsaved));
+    let decrypted = format!("{} Decrypted", status_char(app.entries.decrypted()));
+    let unsaved = format!("{} Unsaved", status_char(app.entries.unsaved()));
 
     let text = vec![
         Spans::from(Span::raw(decrypted)),

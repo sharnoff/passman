@@ -1,93 +1,48 @@
-use signal_hook::{iterator::Signals, SIGWINCH};
-use std::io::{self, Stdout};
-use std::sync::mpsc::{channel, Receiver};
-use std::thread;
-use termion::event::Event;
-use termion::input::TermRead;
-use termion::raw::{IntoRawMode, RawTerminal};
-use tui::backend::TermionBackend;
+use std::process::exit;
 
 mod app;
-mod crypt;
+mod new;
 mod ui;
+mod update;
 mod utils;
+mod version;
 
-use app::App;
+fn main() {
+    let matches = clap_app().get_matches();
 
-const ENCRYPT_TOKEN: &str = "encryption token ☺";
-
-type Backend = TermionBackend<RawTerminal<Stdout>>;
-type Terminal = tui::Terminal<Backend>;
-
-fn main() -> Result<(), io::Error> {
-    // We construct the app before any terminal setup so that any possible errors will display
-    // nicely
-    let clap_yaml = clap::load_yaml!("clap.yml");
-    let mut app = match App::new(clap::App::from(clap_yaml)) {
-        Some(app) => app?,
-        None => return Ok(()),
-    };
-
-    // A little bit of setup:
-    let stdout = io::stdout().into_raw_mode()?;
-    let backend = TermionBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
-
-    ui::draw(&mut terminal, &app)?;
-
-    // And then we simply run all while we have key inputs
-    for item in events()? {
-        if let Some(event) = item {
-            if !app.handle(event?) {
-                terminal.clear()?;
-                break;
-            }
-        }
-
-        ui::draw(&mut terminal, &app)?;
+    // We're expecting that EITHER:
+    // * there's a subcommand, or
+    // * we're given a file to open
+    // If neither or both of these are present, that's an error.
+    if matches.subcommand().is_some() == matches.value_of("FILE").is_some() {
+        let _: Result<_, _> = clap_app().print_help();
+        exit(1);
     }
 
-    Ok(())
+    match matches.subcommand() {
+        Some(("new", ms)) => new::run(ms),
+        Some(("update", ms)) => update::run(ms),
+        _ => app::run(&matches),
+    }
 }
 
-// Produces an iterator over all of the terminal events
-//
-// This is essentially a wrapper around stdin().events() to additionally give resizes as an event,
-// so we return None if it was a resize.
-fn events() -> io::Result<impl Iterator<Item = Option<io::Result<Event>>>> {
-    // In order to do this properly, we need multiple threads to handle
-    struct Iter {
-        rx: Receiver<Option<io::Result<Event>>>,
-    }
+fn clap_app() -> clap::App<'static> {
+    use clap::clap_app;
 
-    impl Iterator for Iter {
-        type Item = Option<io::Result<Event>>;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            self.rx.recv().ok()
-        }
-    }
-
-    let (tx, rx) = channel();
-    let iter = Iter { rx };
-
-    // We'll spawn two threads to handle sending into the channel. The first will produce events
-    // from resizes:
-    let signals = Signals::new(&[SIGWINCH])?;
-    let tx_cloned = tx.clone();
-    thread::spawn(move || {
-        for _ in &signals {
-            tx_cloned.send(None).unwrap();
-        }
-    });
-
-    // While the second will simply forward on the events from stdin, wrapping them with `Some`
-    thread::spawn(move || {
-        for res in io::stdin().events() {
-            tx.send(Some(res)).unwrap();
-        }
-    });
-
-    Ok(iter)
+    clap_app!(passman =>
+        (version: "0.3")
+        (author: "Max Sharnoff <passman@max.sharnoff.org>")
+        (about: "A simple, terminal-based password manager")
+        (override_usage: "passman <FILE>  or  passman <SUBCOMMAND>")
+        (@subcommand new =>
+            (about: "Initializes a new file for storing passwords")
+            (@arg FILE: +required "Sets the file to write to")
+        )
+        (@subcommand update =>
+            (about: "Converts old passman files to the current version")
+            (@arg INPUT: -i --input +required +takes_value "Sets the input file to read from")
+            (@arg OUTPUT: -o --output +required +takes_value "Sets the output file to write to")
+        )
+        (@arg FILE: "The passwords file to read from (and write to)")
+    )
 }

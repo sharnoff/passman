@@ -1,75 +1,126 @@
-//! The main application logic
-
-use crate::crypt;
-use crate::utils::Base64Vec;
+use crate::ui;
+use crate::version::{self, FileContent};
+use clap::ArgMatches;
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
-use serde::{Deserialize, Serialize};
+use signal_hook::{iterator::Signals, SIGWINCH};
 use std::convert::TryFrom;
-use std::fs::{self, File};
+use std::fmt::Display;
+use std::fs::File;
 use std::io::{self, Write};
-use std::mem;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::time::SystemTime;
+use std::process::exit;
+use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
+use std::sync::mpsc;
+use std::{mem, thread};
 use termion::event::{Event, Key};
+use termion::input::TermRead;
 use tui::style::Color;
 
-/// The primary application, with storage for all of the entries
+pub fn run(matches: &ArgMatches) {
+    // Helper function to extract out the value from a `Result`
+    fn handle<T, E: Display>(val: Result<T, E>, err_msg: &str) -> T {
+        match val {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{}: {}", err_msg, e);
+                exit(1);
+            }
+        }
+    }
+
+    let mut app = App::new(matches);
+    let mut term = handle(ui::setup_term(), "failed to setup terminal");
+
+    // We start off by drawing the app once, just so that we aren't waiting for a keypress to
+    // display anything
+    handle(ui::draw(&mut term, &app), "failed to draw to the screen");
+
+    for item in handle(events(), "failed to initialize event loop") {
+        if let Some(event) = item {
+            let event = match event {
+                // If we encountered an error, it's likely because our IO got disconnected or
+                // something. We probably won't be able to display anything anyways.
+                Err(_) => exit(1),
+                Ok(ev) => ev,
+            };
+
+            if !app.handle(event) {
+                let code = match term.clear() {
+                    Ok(_) => 0,
+                    Err(_) => 1,
+                };
+
+                exit(code);
+            }
+        }
+
+        handle(ui::draw(&mut term, &app), "failed to draw to the screen");
+    }
+}
+
+/// Creates an iterator over key events and resizes
+///
+/// Normal events are encoded as `Some(e)`, while resizes are just `None`.
+fn events() -> io::Result<impl Iterator<Item = Option<io::Result<Event>>>> {
+    // In order to do this properly, we need multiple threads to handle it
+    struct Iter {
+        rx: mpsc::Receiver<Option<io::Result<Event>>>,
+    }
+
+    impl Iterator for Iter {
+        type Item = Option<io::Result<Event>>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.rx.recv().ok()
+        }
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let iter = Iter { rx };
+
+    // We'll spawn two threads to handle sending into the channel. The first will produce events
+    // from resizes:
+    let signals = Signals::new(&[SIGWINCH])?;
+    let tx_cloned = tx.clone();
+    thread::spawn(move || {
+        for _ in &signals {
+            tx_cloned.send(None).unwrap();
+        }
+    });
+
+    // While the second will simply forward on the events from stdin, wrapping them with `Some`
+    thread::spawn(move || {
+        for res in io::stdin().events() {
+            tx.send(Some(res)).unwrap();
+        }
+    });
+
+    Ok(iter)
+}
+
+/// All of the containing information about the currently-running application
 pub struct App {
-    pub entries: Entries,
+    pub entries: Box<dyn FileContent>,
+
+    // Where on the screen is the cursor?
     pub selected: SelectState,
-    pub key: Option<String>,
-    // The list of entries available after filtering by the key, given by their indices in
-    // `entries.inner`
+
+    // The list of entries after filtering by the search term, given by their indices in the inner
+    // array from `entries`. This value is `None` if there's no search term.
     pub filter: Option<Vec<usize>>,
+    pub search_term: Option<String>,
+
+    // The index in `entries` or `filter` that's displayed at the top of the entries bar
     pub start_entries_row: usize,
+    // The index *in what's available on-screen* of the selected entry
     pub selected_entries_row: usize,
+    // The number of entries that were visible when last displayed
     pub last_entries_height: AtomicUsize,
-    pub unsaved: bool,
+
     pub file_name: String,
+    // If we have an entry open, where is the cursor?
     pub main_selected: EntrySelectState,
-    pub search_filter: Option<String>,
+    // If there's an entry currently being displayed, this gives the index of that entry
     pub displayed_entry_idx: Option<usize>,
-}
-
-/// A collection of values for serializing and deserializing persistent app data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entries {
-    pub token: Base64Vec,
-    pub iv: Base64Vec,
-    pub last_update: SystemTime,
-    pub inner: Vec<Entry>,
-}
-
-/// A single, named entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub name: String,
-    pub tags: Vec<String>,
-    pub fields: Vec<Field>,
-    pub first_added: SystemTime,
-    pub last_update: SystemTime,
-}
-
-/// A single field of an [`Entry`](struct.Entry.html)
-///
-/// The value given may either be `Basic` (unencrypted) or `Protected`; this is given by the
-/// `Value` enum.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Field {
-    pub name: String,
-    pub value: Value,
-}
-
-/// A single field value, possibly encrypted
-///
-/// We represent an encrypted value as a `Vec<u8>`, wrapped for the serialization provided by
-/// [`Base64Vec`].
-///
-/// [`Base64Vec`]: ../utils/struct.Base64Vec.html
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Value {
-    Basic(String),
-    Protected(Base64Vec),
 }
 
 /// The region that is currently selected (or should be viewed)
@@ -102,7 +153,6 @@ pub enum EntrySelectState {
     Plus,
 }
 
-/// The types of inputs that may be given inside the
 pub enum CommandKind {
     Search {
         return_to_main: bool,
@@ -135,84 +185,35 @@ enum Cmd {
 }
 
 impl App {
-    /// Instantiates the application, loading the persistent data from the given data
-    pub fn new(args: clap::App) -> Option<Result<App, io::Error>> {
-        let matches = args.get_matches();
-        // We're safe to unwrap here because the "FILE" field is required
+    /// Initializes the `App` from the given arguments, exiting on error
+    fn new(matches: &ArgMatches) -> Self {
         let file = matches.value_of("FILE").unwrap();
+        let (entries, maybe_warning) = version::parse(file);
 
-        if matches.is_present("new") {
-            return match App::create_new(file) {
-                Err(Some(e)) => {
-                    eprintln!("Failed to initialize into file {:?}: {:?}", file, e);
-                    Some(Err(e))
-                }
-                Err(None) => None,
-                Ok(()) => {
-                    eprintln!("Successfully initialized into file {:?}", file);
-                    None
-                }
-            };
-        }
-
-        let input = match fs::read_to_string(file) {
-            Err(e) => return Some(Err(e)),
-            Ok(inp) => inp,
+        let selected = match maybe_warning {
+            None => SelectState::Entries,
+            Some(w) => SelectState::PopUp {
+                header: "Warning: old file format",
+                message: vec![
+                    w.reason.to_owned(),
+                    "To update, use the 'update' subcommand (passman update ...).".to_owned(),
+                ],
+                border_color: ui::WARNING_COLOR,
+            },
         };
 
-        let entries: Entries = match serde_yaml::from_str(&input) {
-            Ok(es) => es,
-            Err(e) => {
-                eprintln!("Failed to deserialize yaml file {:?}: {}", file, e);
-                return None;
-            }
-        };
-
-        let mut app = App {
+        App {
             entries,
-            selected: SelectState::Entries,
-            key: None,
+            selected,
             filter: None,
+            search_term: None,
             start_entries_row: 0,
             selected_entries_row: 0,
             last_entries_height: AtomicUsize::new(0),
-            unsaved: false,
-            file_name: file.into(),
+            file_name: file.to_owned(),
             main_selected: EntrySelectState::Name,
-            search_filter: None,
             displayed_entry_idx: None,
-        };
-
-        app.update_displayed_entry();
-
-        Some(Ok(app))
-    }
-
-    fn create_new(file_name: &str) -> Result<(), Option<io::Error>> {
-        let mut file = File::create(file_name).unwrap();
-
-        let pwd = rpassword::read_password_from_tty(Some("Please enter an encryption key: "))?;
-
-        let iv = crypt::gen_iv();
-        let token = crypt::encrypt_with(&pwd, crate::ENCRYPT_TOKEN.as_ref(), &iv);
-
-        let entries = Entries {
-            token: Base64Vec(token),
-            iv: Base64Vec(Vec::from(iv.as_ref())),
-            last_update: SystemTime::now(),
-            inner: Vec::new(),
-        };
-
-        let s = serde_yaml::to_string(&entries).unwrap();
-        write!(file, "{}", s)?;
-        file.flush()?;
-        println!(
-            "Generation successful! Wrote {} bytes to '{}'",
-            s.len(),
-            file_name
-        );
-
-        Ok(())
+        }
     }
 
     /// Handles a single key input, changing the app state
@@ -276,9 +277,9 @@ impl App {
                 if is_search {
                     App::set_filter(
                         &mut self.filter,
-                        &mut self.search_filter,
+                        &mut self.search_term,
                         Some(value.clone()),
-                        &self.entries.inner,
+                        &*self.entries,
                     );
                     self.update_displayed_entry();
                 }
@@ -287,9 +288,9 @@ impl App {
                 CommandKind::Search { return_to_main, .. } => {
                     App::set_filter(
                         &mut self.filter,
-                        &mut self.search_filter,
+                        &mut self.search_term,
                         Some(take(value)),
-                        &self.entries.inner,
+                        &*self.entries,
                     );
                     self.start_entries_row = 0;
                     self.selected_entries_row = 0;
@@ -308,40 +309,29 @@ impl App {
                     }
                 }
                 CommandKind::ModifyEntry { name } => {
-                    let entry = &mut self.entries.inner[self.displayed_entry_idx.unwrap()];
+                    let mut entry = self.entries.entry_mut(self.displayed_entry_idx.unwrap());
                     let mut changed = true;
                     match self.main_selected {
-                        EntrySelectState::Name => {
-                            entry.name = take(value);
-                        }
+                        EntrySelectState::Name => entry.set_name(take(value)),
                         EntrySelectState::Tags => {
-                            entry.tags = value.split(',').map(String::from).collect();
+                            let new_tags = value.split(',').map(String::from).collect();
+                            entry.set_tags(new_tags);
                         }
                         EntrySelectState::Field { idx } => match name.as_mut() {
                             // If we've already entered the name, then we're done entering the
                             // value for the field
-                            Some(n) => {
-                                entry.fields[idx] = Field {
-                                    name: take(n),
-                                    value: Value::Basic(take(value)),
-                                };
-                            }
+                            Some(n) => entry.set_field(idx, take(n), take(value)),
                             // Otherwise, we should move on to entering the value
                             None => {
                                 *name = Some(take(value));
-                                *value = entry.fields[idx]
-                                    .value
-                                    .format(self.key.as_ref(), self.entries.iv.as_ref());
+                                *value = entry
+                                    .field_value(idx)
+                                    .unwrap_or_else(|()| ui::PROTECTED_STR.into());
                                 changed = false;
                             }
                         },
                         EntrySelectState::Plus => match name.as_mut() {
-                            Some(n) => {
-                                entry.fields.push(Field {
-                                    name: take(n),
-                                    value: Value::Basic(take(value)),
-                                });
-                            }
+                            Some(n) => entry.push_field(take(n), take(value)),
                             None => {
                                 *name = Some(take(value));
                                 changed = false;
@@ -350,11 +340,7 @@ impl App {
                     }
 
                     if changed {
-                        let now = SystemTime::now();
-                        self.entries.last_update = now;
-                        entry.last_update = now;
                         self.selected = SelectState::Main;
-                        self.unsaved = true;
                     }
                 }
                 CommandKind::Decrypt {
@@ -373,9 +359,9 @@ impl App {
                 if is_search {
                     App::set_filter(
                         &mut self.filter,
-                        &mut self.search_filter,
+                        &mut self.search_term,
                         Some(value.clone()),
-                        &self.entries.inner,
+                        &*self.entries,
                     );
                     self.update_displayed_entry();
                 }
@@ -387,9 +373,9 @@ impl App {
                 } => {
                     App::set_filter(
                         &mut self.filter,
-                        &mut self.search_filter,
+                        &mut self.search_term,
                         previous.clone(),
-                        &self.entries.inner,
+                        &*self.entries,
                     );
                     let return_to_main = *return_to_main;
                     self.displayed_entry_idx = self.sidebar_selected_entry();
@@ -418,7 +404,9 @@ impl App {
     }
 
     fn handle_main_cmd(&mut self, cmd: Cmd) -> bool {
-        let entry = self.displayed_entry_idx.map(|i| &self.entries.inner[i]);
+        // TODO: RFC 2229
+        let entries = &self.entries;
+        let entry = self.displayed_entry_idx.map(|i| entries.entry(i));
 
         match cmd {
             Cmd::Left => {
@@ -433,12 +421,12 @@ impl App {
             Cmd::Down => {
                 let new_selected = match self.main_selected {
                     EntrySelectState::Name => EntrySelectState::Tags,
-                    EntrySelectState::Tags => match entry.unwrap().fields.len() {
+                    EntrySelectState::Tags => match entry.unwrap().num_fields() {
                         0 => EntrySelectState::Plus,
                         _ => EntrySelectState::Field { idx: 0 },
                     },
                     EntrySelectState::Field { idx } => {
-                        if idx == entry.unwrap().fields.len() - 1 {
+                        if idx == entry.unwrap().num_fields() - 1 {
                             EntrySelectState::Plus
                         } else {
                             EntrySelectState::Field { idx: idx + 1 }
@@ -455,7 +443,7 @@ impl App {
                     EntrySelectState::Tags => EntrySelectState::Name,
                     EntrySelectState::Field { idx: 0 } => EntrySelectState::Tags,
                     EntrySelectState::Field { idx } => EntrySelectState::Field { idx: idx - 1 },
-                    EntrySelectState::Plus => match entry.unwrap().fields.len() {
+                    EntrySelectState::Plus => match entry.unwrap().num_fields() {
                         0 => EntrySelectState::Tags,
                         n => EntrySelectState::Field { idx: n - 1 },
                     },
@@ -469,7 +457,7 @@ impl App {
                 self.selected = SelectState::BottomCommand {
                     kind: CommandKind::Search {
                         return_to_main: true,
-                        previous: self.search_filter.take(),
+                        previous: self.search_term.take(),
                     },
                     value: String::new(),
                     as_stars: false,
@@ -484,14 +472,17 @@ impl App {
                     as_stars: false,
                 };
             }
-            Cmd::Quit => return !self.try_quit(),
+            Cmd::Quit => {
+                drop(entry); // Need to explicitly drop this because `Box` has drop glue
+                return !self.try_quit();
+            }
             Cmd::Select => {
-                let entry = &self.entries.inner[self.displayed_entry_idx.unwrap()];
+                let entry = self.entries.entry(self.displayed_entry_idx.unwrap());
 
                 let value = match self.main_selected {
-                    EntrySelectState::Name => (&entry.name).into(),
-                    EntrySelectState::Tags => entry.tags.join(","),
-                    EntrySelectState::Field { idx } => entry.fields[idx].name.clone(),
+                    EntrySelectState::Name => entry.name().into(),
+                    EntrySelectState::Tags => entry.tags().join(","),
+                    EntrySelectState::Field { idx } => entry.field_name(idx).to_owned(),
                     EntrySelectState::Plus => "".into(),
                 };
 
@@ -514,8 +505,10 @@ impl App {
             _ => return true,
         };
 
-        let entry = match self.displayed_entry_idx {
-            Some(i) => &mut self.entries.inner[i],
+        let entries_decrypted = self.entries.decrypted();
+
+        let mut entry = match self.displayed_entry_idx {
+            Some(i) => self.entries.entry_mut(i),
             None => return true,
         };
 
@@ -527,8 +520,8 @@ impl App {
                     _ => return true,
                 };
 
-                entry.fields.remove(field_idx);
-                self.main_selected = match entry.fields.len() {
+                entry.remove_field(field_idx);
+                self.main_selected = match entry.num_fields() {
                     0 => EntrySelectState::Tags,
                     _ => EntrySelectState::Field {
                         idx: field_idx.saturating_sub(1),
@@ -538,55 +531,35 @@ impl App {
 
             // Swap the encryption on a field
             Key::Char('s') => {
-                let field = match self.main_selected {
-                    EntrySelectState::Field { idx } => &mut entry.fields[idx],
+                let field_idx = match self.main_selected {
+                    EntrySelectState::Field { idx } => idx,
                     _ => return true,
                 };
 
-                let key = match self.key.as_ref() {
-                    Some(k) => k,
-                    // If we haven't decrypted the contents, we can't do anything. We'll produce a
-                    // pop-up error
-                    None => {
-                        self.selected = SelectState::PopUp {
-                            header: "Contents not decrypted",
-                            message: vec![
-                                "Cannot swap encryption on this field; the contents have not yet been decrypted.".into(),
-                                "Help: To decrypt the contents of the entries, use ':unlock'"
-                                    .into(),
-                            ],
-                            border_color: Color::Yellow,
-                        };
-                        return true;
-                    }
-                };
+                // If we haven't decrypted yet, produce a pop-up error
+                if !entries_decrypted {
+                    self.selected = SelectState::PopUp {
+                        header: "Contents not decrypted",
+                        message: vec![
+                            "Cannot swap encryption on this field; the contents have not yet been decrypted.".into(),
+                            "Help: To decrypt the contents of the entries, use ':unlock'"
+                                .into(),
+                        ],
+                        border_color: ui::WARNING_COLOR,
+                    };
 
-                match &mut field.value {
-                    Value::Basic(s) => {
-                        let encrypted =
-                            crypt::encrypt_with(&key, s.as_ref(), self.entries.iv.as_ref());
-                        field.value = Value::Protected(Base64Vec(encrypted));
-                    }
-                    Value::Protected(bytes) => {
-                        let res =
-                            crypt::decrypt_with(&key, bytes.as_ref(), self.entries.iv.as_ref())
-                                .and_then(|bytes| String::from_utf8(bytes).ok());
-                        match res {
-                            Some(s) => field.value = Value::Basic(s),
-                            None => {
-                                self.selected = SelectState::PopUp {
-                                    header: "Decryption error occured",
-                                    message: vec![
-                                        "This may be due to an invalid key; to re-enter, use ':unlock!'".into(),
-                                    ],
-                                    border_color: Color::Red,
-                                };
-                            }
-                        }
-                    }
+                    return true;
                 }
 
-                self.unsaved = true;
+                if let Err(()) = entry.swap_encryption(field_idx) {
+                    self.selected = SelectState::PopUp {
+                        header: "Decryption error occured",
+                        message: vec![
+                            "This may be due to an invalid key; to re-enter, use ':unlock!'".into(),
+                        ],
+                        border_color: ui::ERROR_COLOR,
+                    };
+                }
             }
 
             // Add a field
@@ -595,6 +568,7 @@ impl App {
                 // for adding a field - even though this is a bit of a hack, it means we don't need
                 // to duplicate code.
                 self.main_selected = EntrySelectState::Plus;
+                drop(entry); // Need to explicitly drop this because `Box` has drop glue
                 self.handle_main_cmd(Cmd::Select);
             }
             _ => (),
@@ -606,7 +580,7 @@ impl App {
     fn handle_entries_cmd(&mut self, cmd: Cmd) -> bool {
         let num_items = match self.filter.as_ref() {
             Some(v) => v.len(),
-            None => self.entries.inner.len(),
+            None => self.entries.num_entries(),
         };
 
         match cmd {
@@ -620,7 +594,7 @@ impl App {
                     return true;
                 }
 
-                let last_height = self.last_entries_height.load(SeqCst);
+                let last_height = self.last_entries_height.load(Acquire);
                 if self.selected_entries_row < last_height - 1 {
                     self.selected_entries_row += 1;
                 } else {
@@ -660,7 +634,7 @@ impl App {
                 self.selected = SelectState::BottomCommand {
                     kind: CommandKind::Search {
                         return_to_main: false,
-                        previous: self.search_filter.take(),
+                        previous: self.search_term.take(),
                     },
                     value: String::new(),
                     as_stars: false,
@@ -700,17 +674,8 @@ impl App {
         match cmd {
             // new entry
             "new" => {
-                let now = SystemTime::now();
-                self.entries.inner.push(Entry {
-                    name: "<New Entry>".into(),
-                    tags: Vec::new(),
-                    fields: Vec::new(),
-                    first_added: now,
-                    last_update: now,
-                });
-                self.entries.last_update = now;
-
-                self.displayed_entry_idx = Some(self.entries.inner.len() - 1);
+                let new_entry_idx = self.entries.add_empty_entry("<New Entry>".into());
+                self.displayed_entry_idx = Some(new_entry_idx);
                 self.main_selected = EntrySelectState::Name;
                 self.selected = SelectState::BottomCommand {
                     kind: CommandKind::ModifyEntry { name: None },
@@ -768,7 +733,7 @@ impl App {
 
             "delete" => match self.displayed_entry_idx {
                 Some(idx) if return_to_main => {
-                    self.entries.inner.remove(idx);
+                    self.entries.remove_entry(idx);
                     let removed = match self.filter.as_mut() {
                         Some(filter) => match filter.iter().position(|&i| i == idx) {
                             Some(i) => {
@@ -787,7 +752,6 @@ impl App {
                         self.start_entries_row = self.start_entries_row.saturating_sub(1);
                     }
 
-                    self.unsaved = true;
                     self.selected = SelectState::Entries;
                 }
 
@@ -799,7 +763,7 @@ impl App {
                         message: vec![
                             "Help: Select an entry with 'Enter' before using ':delete'".into()
                         ],
-                        border_color: Color::Blue,
+                        border_color: ui::INFO_COLOR,
                     };
                 }
                 Some(_) => {
@@ -810,7 +774,7 @@ impl App {
                             "ensure that you have selected (with 'Enter') the entry to delete."
                                 .into(),
                         ],
-                        border_color: Color::Blue,
+                        border_color: ui::INFO_COLOR,
                     };
                 }
             },
@@ -820,7 +784,7 @@ impl App {
                 self.selected = SelectState::PopUp {
                     header: "Unknown Command",
                     message: vec![format!("No command found with name '{}'", cmd)],
-                    border_color: Color::Red,
+                    border_color: ui::ERROR_COLOR,
                 }
             }
         }
@@ -835,7 +799,7 @@ impl App {
 
         match self.filter.as_ref() {
             Some(list) => list.get(idx).cloned(),
-            None if idx >= self.entries.inner.len() => None,
+            None if idx >= self.entries.num_entries() => None,
             None => Some(idx),
         }
     }
@@ -848,7 +812,7 @@ impl App {
             .filter
             .as_ref()
             .map(|filter| filter.len())
-            .unwrap_or_else(|| self.entries.inner.len());
+            .unwrap_or_else(|| self.entries.num_entries());
         let current_idx = self.start_entries_row + self.selected_entries_row;
 
         // If the maximum index is zero, we can't have a selected entry to display
@@ -876,29 +840,33 @@ impl App {
 
     fn set_filter(
         filter: &mut Option<Vec<usize>>,
-        key: &mut Option<String>,
-        new: Option<String>,
-        entries: &[Entry],
+        search_term: &mut Option<String>,
+        new_term: Option<String>,
+        entries: &dyn FileContent,
     ) {
-        *key = new;
-        let key = match key {
+        *search_term = new_term;
+        let term = match search_term {
             None => {
                 *filter = None;
                 return;
             }
-            Some(k) if k.is_empty() => {
-                *key = None;
+            Some(t) if t.is_empty() => {
+                *search_term = None;
                 *filter = None;
                 return;
             }
-            Some(k) => k,
+            Some(t) => t,
         };
 
         let matcher = SkimMatcherV2::default();
         let mut matches = entries
-            .iter()
+            .all_entries()
+            .into_iter()
             .enumerate()
-            .filter_map(|(i, e)| e.fuzzy_match(&matcher, &key).map(|v| (i, v)))
+            .filter_map(|(i, e)| {
+                let score = fuzzy_match(term, &matcher, e.name(), e.tags())?;
+                Some((i, score))
+            })
             .collect::<Vec<_>>();
 
         // Sort in reverse order so that high-value keys are first
@@ -911,13 +879,13 @@ impl App {
     fn write(&mut self, return_to_main: bool) -> Result<(), ()> {
         // Try to open the file
         let res = File::create(&self.file_name).and_then(|mut f| {
-            let s = serde_yaml::to_string(&self.entries).unwrap();
+            let s = self.entries.write();
             write!(f, "{}", s).and_then(|_| f.flush())
         });
 
         match res {
             Ok(()) => {
-                self.unsaved = false;
+                self.entries.mark_saved();
                 self.selected = match return_to_main {
                     true => SelectState::Main,
                     false => SelectState::Entries,
@@ -929,7 +897,7 @@ impl App {
                 self.selected = SelectState::PopUp {
                     header: "Error: Failed to write to file",
                     message: vec![format!("Error: {}", e)],
-                    border_color: Color::Red,
+                    border_color: ui::ERROR_COLOR,
                 };
 
                 Err(())
@@ -939,7 +907,7 @@ impl App {
 
     /// Attempt to decrypt the content of `self.entries`, producing a pop-up widget upon failure
     fn decrypt(&mut self, key: String, return_to_main: bool, force: bool) {
-        if self.key.is_some() && !force {
+        if self.entries.decrypted() && !force {
             self.selected = SelectState::PopUp {
                 header: "Already decrypted",
                 message: vec![
@@ -947,36 +915,31 @@ impl App {
                     "To force a different key, try adding an exlamation mark:".into(),
                     "  ':decrypt!' or ':unlock!'".into(),
                 ],
-                border_color: Color::Blue,
+                border_color: ui::INFO_COLOR,
             };
             return;
         }
 
-        let cipher_token = self.entries.token.as_ref();
-        let iv = self.entries.iv.as_ref();
-        let decrypted_token = crypt::decrypt_with(&key, cipher_token, iv);
-
-        if let Some(t) = decrypted_token {
-            if t == crate::ENCRYPT_TOKEN.as_bytes() {
-                self.key = Some(key);
-                match return_to_main {
-                    true => self.selected = SelectState::Main,
-                    false => self.selected = SelectState::Entries,
-                }
-                return;
+        match self.entries.set_key(key) {
+            Ok(()) => match return_to_main {
+                true => self.selected = SelectState::Main,
+                false => self.selected = SelectState::Entries,
+            },
+            Err(()) => {
+                self.selected = SelectState::PopUp {
+                    header: "Failed to decrypt",
+                    message: vec![
+                        "Could not decrypt the contents; the entered key was incorrect".into(),
+                    ],
+                    border_color: ui::ERROR_COLOR,
+                };
             }
         }
-
-        self.selected = SelectState::PopUp {
-            header: "Failed to decrypt",
-            message: vec!["Could not decrypt the contents; the entered key was incorrect".into()],
-            border_color: Color::Red,
-        };
     }
 
     /// Attempts to quit, returning whether it can successfully done
     fn try_quit(&mut self) -> bool {
-        match self.unsaved {
+        match self.entries.unsaved() {
             false => true,
             true => {
                 self.selected = SelectState::PopUp {
@@ -985,7 +948,7 @@ impl App {
                         "To save and exit use, use ':wq'.".into(),
                         "Otherwise, to exit without saving, use ':q!'.".into(),
                     ],
-                    border_color: Color::Yellow,
+                    border_color: ui::WARNING_COLOR,
                 };
 
                 false
@@ -1019,31 +982,10 @@ impl TryFrom<Event> for Cmd {
     }
 }
 
-impl Entry {
-    pub fn fuzzy_match(&self, matcher: &SkimMatcherV2, target: &str) -> Option<i64> {
-        (self.tags.iter())
-            .map(|t| matcher.fuzzy_match(t, target))
-            .max()
-            .unwrap_or_default()
-            .max(matcher.fuzzy_match(&self.name, target))
-    }
-}
-
-impl Value {
-    pub fn format(&self, key: Option<impl AsRef<str>>, iv: &[u8]) -> String {
-        match &self {
-            Value::Basic(s) => s.clone(),
-            Value::Protected(bytes) => match key {
-                None => "<Protected>".into(),
-                Some(key) => {
-                    let res = crypt::decrypt_with(key.as_ref(), bytes.as_ref(), iv)
-                        .and_then(|bs| String::from_utf8(bs).ok());
-                    match res {
-                        None => "<Decryption error>".into(),
-                        Some(decrypted) => decrypted,
-                    }
-                }
-            },
-        }
-    }
+fn fuzzy_match(target: &str, matcher: &SkimMatcherV2, name: &str, tags: Vec<&str>) -> Option<i64> {
+    tags.into_iter()
+        .map(|t| matcher.fuzzy_match(t, target))
+        .max()
+        .unwrap_or_default()
+        .max(matcher.fuzzy_match(name, target))
 }
