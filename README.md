@@ -25,39 +25,7 @@ persistent file.
 
 ### Usage
 
-There's two defined commands: creating a new `passman`-managed file with `passman --new <FILE>`, and
-loading an existing one with `passman <FILE>`. The clip below shows some sample usage - just enough
-to get you started.
-
-[![asciicast](https://asciinema.org/a/rEDu5cvwwBk7r7dqeMSjJMvdc.svg)](https://asciinema.org/a/rEDu5cvwwBk7r7dqeMSjJMvdc)
-
-This produces the file "test":
-```yml
----
-token: 7a0ORfcXbfQRuFCNOiiv50U9KxDHQbA5YQKLJ86VHwM=
-iv: KnGbdjX8GavtUeZf7h8g2A==
-last_update:
-  secs_since_epoch: 1586116699
-  nanos_since_epoch: 253419844
-inner:
-  - name: Test!
-    tags: []
-    fields:
-      - name: Github
-        value:
-          Basic: github.com/sharnoff/passman
-      - name: Password
-        value:
-          Protected: mm7ZVDxPfurj44UIyJsiEQ==
-    first_added:
-      secs_since_epoch: 1586116685
-      nanos_since_epoch: 907506259
-    last_update:
-      secs_since_epoch: 1586116699
-      nanos_since_epoch: 253419844
-```
-
-### Possible future features
-
-* Better TUI - maybe using something like [tui](#https://github.com/fdehau/tui-rs)
-* Operating over a network (or running as a daemon)
+There's a few defined commands. Typical usage for interacting with a storage file will be done with
+`passman <FILE>`. A new file can be made with `passman new <FILE>`, or upgraded from a previous
+version with `passman upgrade --input <FILE> --output <FILE>`. The right-hand side of the app
+provides help with keybindings.
