@@ -1,9 +1,8 @@
 use std::process::exit;
 
 mod app;
-mod new;
+mod subcmd;
 mod ui;
-mod update;
 mod utils;
 mod version;
 
@@ -20,8 +19,8 @@ fn main() {
     }
 
     match matches.subcommand() {
-        Some(("new", ms)) => new::run(ms),
-        Some(("update", ms)) => update::run(ms),
+        Some(("new", ms)) => subcmd::new::run(ms),
+        Some(("update", ms)) => subcmd::update::run(ms),
         _ => app::run(&matches),
     }
 }
