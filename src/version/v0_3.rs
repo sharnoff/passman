@@ -2,7 +2,7 @@
 
 use super::{CurrentFileContent, EntryMut, EntryRef, Keyed, Warning};
 use crate::utils::Base64Vec;
-use aes_soft::Aes256;
+use aes::Aes256;
 use argon2::password_hash::Salt;
 use argon2::{Argon2, PasswordHasher};
 use block_modes::block_padding::Pkcs7;
@@ -29,7 +29,8 @@ pub fn parse(file_content: String) -> Keyed<FileContent> {
     }
 }
 
-pub fn hash_key(salt: Salt, key: &str) -> Vec<u8> {
+// Returns the parameters we use for the hasher
+fn argon_params() -> argon2::Params {
     // Number of passes. 5 passes for now - can be adjusted later
     const T_COST: u32 = 5;
     // Memory cost, in KBytes. ~1GB
@@ -38,10 +39,22 @@ pub fn hash_key(salt: Salt, key: &str) -> Vec<u8> {
     // implement the speed increase from parallel lanes.
     const PARALLEL: u32 = 1;
 
-    let hasher = Argon2::new(None, T_COST, M_COST, PARALLEL, argon2::Version::V0x13).unwrap();
+    let mut builder = argon2::ParamsBuilder::new();
+    builder.t_cost(T_COST).unwrap();
+    builder.m_cost(M_COST).unwrap();
+    builder.p_cost(PARALLEL).unwrap();
+    builder.params().unwrap()
+}
+
+pub fn hash_key(salt: Salt, key: &str) -> Vec<u8> {
+    let hasher = Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon_params(),
+    );
 
     let hash = hasher
-        .hash_password_simple(key.as_bytes(), &salt)
+        .hash_password(key.as_bytes(), &salt)
         .unwrap()
         .hash
         .unwrap();
@@ -73,8 +86,7 @@ pub fn encrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Vec<u8> {
     // Easiest to just generate with constants and maybe not use all of it.
     let mut max_len_salt: [u8; SALT_MAX_LENGTH] = rng.gen();
 
-    // `gen_range` takes an exclusive upper bound -- MAX_LENGTH is inclusive, so we add 1
-    let salt_len = rng.gen_range(min_salt_len, SALT_MAX_LENGTH + 1);
+    let salt_len = rng.gen_range(min_salt_len..=SALT_MAX_LENGTH);
     let salt = &mut max_len_salt[..salt_len];
 
     encrypt_with_salt(val, salt, iv, key)
@@ -92,12 +104,12 @@ pub fn encrypt_with_salt(val: &[u8], salt: &mut [u8], iv: &[u8], key: &[u8]) -> 
     full.extend_from_slice(salt);
     full.extend_from_slice(val);
 
-    let cipher = <Cbc<Aes256, Pkcs7>>::new_var(key, iv).unwrap();
+    let cipher = <Cbc<Aes256, Pkcs7>>::new_from_slices(key, iv).unwrap();
     cipher.encrypt_vec(&full)
 }
 
 pub fn decrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Option<Vec<u8>> {
-    let cipher = <Cbc<Aes256, Pkcs7>>::new_var(key, iv).unwrap();
+    let cipher = <Cbc<Aes256, Pkcs7>>::new_from_slices(key, iv).unwrap();
     let mut decrypted = cipher.decrypt_vec(val).ok()?;
 
     // Refer to the construction in `encrypt`

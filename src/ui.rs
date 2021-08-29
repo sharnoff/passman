@@ -104,7 +104,9 @@ pub fn draw(term: &mut Terminal, app: &App) -> io::Result<()> {
             let rect = f.size();
             render_popup(&mut f, rect, header, message, *border_color);
         }
-    })
+    })?;
+
+    Ok(())
 }
 
 fn vertical_chunks(rect: Rect, constraints: Vec<Constraint>) -> Vec<Rect> {
@@ -557,7 +559,7 @@ fn render_popup(
 
     let text = message
         .iter()
-        .map(|line| textwrap::wrap_iter(line, rect.width.saturating_sub(2) as usize))
+        .map(|line| textwrap::wrap(line, rect.width.saturating_sub(2) as usize))
         .flatten()
         .map(|line| Spans::from(Span::raw(line)))
         .collect::<Vec<_>>();

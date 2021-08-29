@@ -2,7 +2,7 @@ use crate::ui;
 use crate::version::{self, FileContent};
 use clap::ArgMatches;
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
-use signal_hook::{iterator::Signals, SIGWINCH};
+use signal_hook::{consts::SIGWINCH, iterator::Signals};
 use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fs::File;
@@ -79,10 +79,10 @@ fn events() -> io::Result<impl Iterator<Item = Option<io::Result<Event>>>> {
 
     // We'll spawn two threads to handle sending into the channel. The first will produce events
     // from resizes:
-    let signals = Signals::new(&[SIGWINCH])?;
+    let mut signals = Signals::new(&[SIGWINCH])?;
     let tx_cloned = tx.clone();
     thread::spawn(move || {
-        for _ in &signals {
+        for _ in &mut signals {
             tx_cloned.send(None).unwrap();
         }
     });

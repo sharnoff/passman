@@ -5,7 +5,7 @@ use super::{
     PlaintextField, Warning,
 };
 use crate::utils::Base64Vec;
-use aes_soft::Aes256;
+use aes::Aes256;
 use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Cbc};
 use serde::{Deserialize, Serialize};
@@ -36,17 +36,17 @@ pub fn parse(file_content: String) -> Keyed<FileContent> {
 
 fn hash_key(key: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.input(key.as_bytes());
-    hasher.result().into()
+    hasher.update(key.as_bytes());
+    hasher.finalize().into()
 }
 
 fn encrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Vec<u8> {
-    let cipher = <Cbc<Aes256, Pkcs7>>::new_var(key, iv).unwrap();
+    let cipher = <Cbc<Aes256, Pkcs7>>::new_from_slices(key, iv).unwrap();
     cipher.encrypt_vec(val)
 }
 
 fn decrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Option<Vec<u8>> {
-    let cipher = <Cbc<Aes256, Pkcs7>>::new_var(&key, iv).unwrap();
+    let cipher = <Cbc<Aes256, Pkcs7>>::new_from_slices(&key, iv).unwrap();
     cipher.decrypt_vec(val).ok()
 }
 
