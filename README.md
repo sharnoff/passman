@@ -1,15 +1,11 @@
 # passman
 
-A simple terminal-based password (and associated information) manager. Nothing quite like
-rolling your own, right?
+A simple terminal-based password (and associated information) manager. There are plenty of others
+available, and - to be honest - there isn't really any reason you should use this one instead of
+them.
 
-**\[Disclaimer\]**: I know about as much about security as what a few google searches will offer.
-You should **under no circumstances treat this seriously**. (That being said, contents *are*
-encrypted with 256-bit AES -- feel free to check for yourself.)
-
-With that out of the way, contributions are definitely welcome! This was a few-days project to
-satisfy a personal desire, but I'd be happy to invest more effort into growing it if there's
-interest - just open an issue or pull request, nothing too fancy.
+That being said, the user-interface feels great and the project is generally pretty simple!
+Contributions are welcome :)
 
 ### Installation
 
@@ -18,14 +14,20 @@ there's a desire for it to be added, it can.
 
 For now, installing can be done by cargo via git.
 ```
-cargo install --git "https://github.com/sharnoff/passman.git"
+cargo install --git "https://github.com/sharnoff/passman"
 ```
-This provides the executable `passman`. I use this with an alias, "pm" that executes this on a
-persistent file.
+This provides the executable `passman`. I use this with an alias, "pm" that runs this on the
+particular file I keep everything in.
 
 ### Usage
 
-There's a few defined commands. Typical usage for interacting with a storage file will be done with
-`passman <FILE>`. A new file can be made with `passman new <FILE>`, or upgraded from a previous
-version with `passman upgrade --input <FILE> --output <FILE>`. The right-hand side of the app
-provides help with keybindings.
+There's a few basic commands available.
+
+To set up a new file, use `passman new <FILE>`.
+
+All changes to data are done using the simple `passman <FILE>` command. The app itself uses vi-style
+keybindings - a list of available commands is on the right-hand side at all times.
+
+Updating an old file can be done with `passman upgrade --input <OLD FILE> --output <NEW FILE>`, and
+there's additional support for producing and using plaintext versions, with the `emit-plaintext` and
+`from-plaintext` subcommands.
