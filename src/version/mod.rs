@@ -22,11 +22,13 @@
 //! ```
 //! Those are used by the `parse` function at the bottom of this file.
 
+use serde::{Deserialize, Serialize};
 use std::fs::read_to_string;
 use std::ops::Range;
 use std::process::exit;
 use std::time::SystemTime;
 
+mod latest;
 mod v0_2;
 mod v0_3;
 
@@ -205,17 +207,38 @@ pub fn parse(file: &str) -> (Box<dyn FileContent>, Option<Warning>) {
     })
 }
 
-/// Helper type for conversion between `FileContent` versions
-struct EntryTemplate {
+/// Return type for [`CurrentFileContent::to_plaintext`]
+///
+/// This is used both to convert between `FileContent` versions *and* to within the
+/// `emit-plaintext` and `from-plaintext` subcommands.
+#[derive(Serialize, Deserialize)]
+pub struct PlaintextContent {
+    last_update: SystemTime,
+    entries: Vec<PlaintextEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PlaintextEntry {
     name: String,
     tags: Vec<String>,
-    fields: Vec<FieldTemplate>,
+    fields: Vec<PlaintextField>,
     first_added: SystemTime,
     last_update: SystemTime,
 }
 
-struct FieldTemplate {
+#[derive(Serialize, Deserialize)]
+struct PlaintextField {
     name: String,
     value: String,
     protected: bool,
+}
+
+impl PlaintextContent {
+    /// Produces a new, empty `PlaintextContent` with the current time as its last update
+    fn init() -> Self {
+        PlaintextContent {
+            last_update: SystemTime::now(),
+            entries: Vec::new(),
+        }
+    }
 }

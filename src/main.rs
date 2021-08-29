@@ -21,6 +21,8 @@ fn main() {
     match matches.subcommand() {
         Some(("new", ms)) => subcmd::new::run(ms),
         Some(("update", ms)) => subcmd::update::run(ms),
+        Some(("emit-plaintext", ms)) => subcmd::emit_plaintext::run(ms),
+        Some(("from-plaintext", ms)) => subcmd::from_plaintext::run(ms),
         _ => app::run(&matches),
     }
 }
@@ -39,6 +41,16 @@ fn clap_app() -> clap::App<'static> {
         )
         (@subcommand update =>
             (about: "Converts old passman files to the current version")
+            (@arg INPUT: -i --input +required +takes_value "Sets the input file to read from")
+            (@arg OUTPUT: -o --output +required +takes_value "Sets the output file to write to")
+        )
+        (@subcommand "emit-plaintext" =>
+            (about: "Outputs a plaintext (fully decrypted) version of the file")
+            (@arg INPUT: -i --input +required +takes_value "Sets the input file to read from")
+            (@arg OUTPUT: -o --output +required +takes_value "Sets the output file to write to")
+        )
+        (@subcommand "from-plaintext" =>
+            (about: "Creates a new file from a plaintext version")
             (@arg INPUT: -i --input +required +takes_value "Sets the input file to read from")
             (@arg OUTPUT: -o --output +required +takes_value "Sets the output file to write to")
         )

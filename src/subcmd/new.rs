@@ -1,11 +1,10 @@
 //! Wrapper module for the interface around creating a new storage file
 
+use super::print_err_and_exit;
 use crate::version::{CurrentFileContent, FileContent};
 use clap::ArgMatches;
-use std::fmt::Display;
 use std::fs::File;
 use std::io::Write;
-use std::process;
 
 pub fn run(matches: &ArgMatches) {
     let file_name = matches.value_of("FILE").unwrap();
@@ -27,10 +26,4 @@ pub fn run(matches: &ArgMatches) {
         as_string.len(),
         file_name
     );
-}
-
-// Ideally this would return !, but that's not stable yet :(
-fn print_err_and_exit<T>(err: impl Display) -> T {
-    eprintln!("{}", err);
-    process::exit(1)
 }

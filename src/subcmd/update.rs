@@ -1,11 +1,10 @@
 //! Tools for updating a storage file
 
+use super::print_err_and_exit;
 use crate::version::{self, FileContent};
 use clap::ArgMatches;
-use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, Write};
-use std::process;
 
 pub fn run(matches: &ArgMatches) {
     let input_file_name = matches.value_of("INPUT").unwrap();
@@ -25,10 +24,4 @@ pub fn run(matches: &ArgMatches) {
             write!(f, "{}", s).and_then(|_| f.flush())
         })
         .unwrap_or_else(print_err_and_exit);
-}
-
-// Ideally this would return !, but that's not stable yet :(
-fn print_err_and_exit<T>(err: impl Display) -> T {
-    eprintln!("{}", err);
-    process::exit(1)
 }

@@ -1,21 +1,20 @@
 //! Version 0.3 of the file format
 
-use super::{CurrentFileContent, EntryMut, EntryRef, EntryTemplate, Keyed, Warning};
+use super::{CurrentFileContent, EntryMut, EntryRef, Keyed, Warning};
 use crate::utils::Base64Vec;
 use aes_soft::Aes256;
-use argon2::password_hash::{Salt, SaltString};
+use argon2::password_hash::Salt;
 use argon2::{Argon2, PasswordHasher};
 use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Cbc};
 use rand::{thread_rng, Rng};
-use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::process::exit;
 use std::time::SystemTime;
 
 pub const WARNING: Option<Warning> = None;
 
-static VERSION_STR: &str = "v0.3";
+pub static VERSION_STR: &str = "v0.3";
 
 pub fn parse(file_content: String) -> Keyed<FileContent> {
     match serde_yaml::from_str::<FileContent>(&file_content) {
@@ -30,7 +29,7 @@ pub fn parse(file_content: String) -> Keyed<FileContent> {
     }
 }
 
-fn hash_key(salt: Salt, key: &str) -> Vec<u8> {
+pub fn hash_key(salt: Salt, key: &str) -> Vec<u8> {
     // Number of passes. 5 passes for now - can be adjusted later
     const T_COST: u32 = 5;
     // Memory cost, in KBytes. ~1GB
@@ -57,9 +56,9 @@ fn hash_key(salt: Salt, key: &str) -> Vec<u8> {
 const SALT_MIN_LENGTH: usize = 17;
 const SALT_MAX_LENGTH: usize = 32;
 
-static ENCRYPT_TOKEN: &[u8] = "encryption token ☺".as_bytes();
+pub static ENCRYPT_TOKEN: &[u8] = "encryption token ☺".as_bytes();
 
-fn encrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Vec<u8> {
+pub fn encrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Vec<u8> {
     // Use a random length salt before the value. If the value is too short (i.e. < 17 bytes),
     // we'll increase the minimum length of the salt so that we always get outputs ≥ 32 bytes.
     //
@@ -81,7 +80,7 @@ fn encrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Vec<u8> {
     encrypt_with_salt(val, salt, iv, key)
 }
 
-fn encrypt_with_salt(val: &[u8], salt: &mut [u8], iv: &[u8], key: &[u8]) -> Vec<u8> {
+pub fn encrypt_with_salt(val: &[u8], salt: &mut [u8], iv: &[u8], key: &[u8]) -> Vec<u8> {
     // Encode the length of the salt into its first bit:
     debug_assert!(SALT_MAX_LENGTH - SALT_MIN_LENGTH == 15);
     assert!(SALT_MIN_LENGTH <= salt.len() && salt.len() <= SALT_MAX_LENGTH);
@@ -97,7 +96,7 @@ fn encrypt_with_salt(val: &[u8], salt: &mut [u8], iv: &[u8], key: &[u8]) -> Vec<
     cipher.encrypt_vec(&full)
 }
 
-fn decrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Option<Vec<u8>> {
+pub fn decrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Option<Vec<u8>> {
     let cipher = <Cbc<Aes256, Pkcs7>>::new_var(key, iv).unwrap();
     let mut decrypted = cipher.decrypt_vec(val).ok()?;
 
@@ -111,94 +110,38 @@ fn decrypt(val: &[u8], iv: &[u8], key: &[u8]) -> Option<Vec<u8>> {
 
 #[derive(Serialize, Deserialize)]
 pub struct FileContent {
-    version: String, // Should always be v0.3
-    token: Base64Vec,
-    iv: Base64Vec,
-    salt: String, // Salt for the encryption password
-    last_update: SystemTime,
-    inner: Vec<Entry>,
+    pub version: String, // Should always be v0.3
+    pub token: Base64Vec,
+    pub iv: Base64Vec,
+    pub salt: String, // Salt for the encryption password
+    pub last_update: SystemTime,
+    pub inner: Vec<Entry>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Entry {
-    name: String,
-    tags: Vec<String>,
-    fields: Vec<Field>,
-    first_added: SystemTime,
-    last_update: SystemTime,
+pub struct Entry {
+    pub name: String,
+    pub tags: Vec<String>,
+    pub fields: Vec<Field>,
+    pub first_added: SystemTime,
+    pub last_update: SystemTime,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Field {
-    name: String,
-    value: Value,
+pub struct Field {
+    pub name: String,
+    pub value: Value,
 }
 
 #[derive(Serialize, Deserialize)]
-enum Value {
+pub enum Value {
     Basic(String),
     Protected(Base64Vec),
 }
 
-impl Keyed<FileContent> {
-    /// Creates a new `FileContent` with the given password
-    pub fn make_new(pwd: String) -> Self {
-        Self::from_entries(pwd, Vec::new(), SystemTime::now())
-    }
-
-    /// Produces a `FileContent` from a set of entries
-    pub(super) fn from_entries(
-        pwd: String,
-        entries: Vec<EntryTemplate>,
-        last_update: SystemTime,
-    ) -> Self {
-        let pwd_salt = SaltString::generate(&mut OsRng); // Have to use OsRng here for CSPRNG
-        let iv = thread_rng().gen::<[u8; 16]>().to_vec();
-
-        let hashed_key = hash_key(pwd_salt.as_salt(), &pwd);
-        let token = encrypt(ENCRYPT_TOKEN, &iv, &hashed_key);
-
-        let inner = entries
-            .into_iter()
-            .map(|e| Entry {
-                name: e.name,
-                tags: e.tags,
-                fields: e
-                    .fields
-                    .into_iter()
-                    .map(|f| {
-                        let value = match f.protected {
-                            false => Value::Basic(f.value),
-                            true => {
-                                let enc = encrypt(f.value.as_bytes(), &iv, &hashed_key);
-                                Value::Protected(Base64Vec(enc))
-                            }
-                        };
-
-                        Field {
-                            name: f.name,
-                            value,
-                        }
-                    })
-                    .collect(),
-                first_added: e.first_added,
-                last_update: e.last_update,
-            })
-            .collect();
-
-        Keyed::new(FileContent {
-            version: VERSION_STR.to_owned(),
-            token: Base64Vec(token),
-            iv: Base64Vec(iv),
-            salt: pwd_salt.as_str().to_owned(),
-            last_update,
-            inner,
-        })
-    }
-}
-
 impl super::FileContent for Keyed<FileContent> {
-    fn to_current(self: Box<Self>, _pwd: String) -> Result<Box<CurrentFileContent>, ()> {
+    fn to_current(mut self: Box<Self>, pwd: String) -> Result<Box<CurrentFileContent>, ()> {
+        self.set_key(pwd)?;
         Ok(self)
     }
 

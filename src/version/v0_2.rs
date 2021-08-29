@@ -1,6 +1,9 @@
 //! Version 0.2 of the file format
 
-use super::{CurrentFileContent, EntryMut, EntryRef, EntryTemplate, FieldTemplate, Keyed, Warning};
+use super::{
+    CurrentFileContent, EntryMut, EntryRef, Keyed, PlaintextContent, PlaintextEntry,
+    PlaintextField, Warning,
+};
 use crate::utils::Base64Vec;
 use aes_soft::Aes256;
 use block_modes::block_padding::Pkcs7;
@@ -93,7 +96,7 @@ impl super::FileContent for Keyed<FileContent> {
             .inner
             .into_iter()
             .map(|e| {
-                Ok(EntryTemplate {
+                Ok(PlaintextEntry {
                     name: e.name,
                     tags: e.tags,
                     fields: e
@@ -110,7 +113,7 @@ impl super::FileContent for Keyed<FileContent> {
                                 }
                             };
 
-                            Ok(FieldTemplate {
+                            Ok(PlaintextField {
                                 name: f.name,
                                 value,
                                 protected,
@@ -123,10 +126,12 @@ impl super::FileContent for Keyed<FileContent> {
             })
             .collect::<Result<_, ()>>()?;
 
-        Ok(Box::new(CurrentFileContent::from_entries(
+        Ok(Box::new(CurrentFileContent::from_plaintext(
             pwd,
-            entries,
-            self.content.last_update,
+            PlaintextContent {
+                last_update: self.content.last_update,
+                entries,
+            },
         )))
     }
 
