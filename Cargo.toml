@@ -2,7 +2,7 @@
 name = "passman"
 version = "0.3.0"
 authors = ["sharnoff <github@max.sharnoff.org>"]
-edition = "2018"
+edition = "2021"
 description = "A simple terminal-based password manager"
 readme = "README.md"
 

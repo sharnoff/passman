@@ -403,9 +403,7 @@ impl App {
     }
 
     fn handle_main_cmd(&mut self, cmd: Cmd) -> bool {
-        // TODO: RFC 2229
-        let entries = &self.entries;
-        let entry = self.displayed_entry_idx.map(|i| entries.entry(i));
+        let entry = self.displayed_entry_idx.map(|i| self.entries.entry(i));
 
         match cmd {
             Cmd::Left => {
