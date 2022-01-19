@@ -1,12 +1,12 @@
 use crate::ui;
 use crate::version::{self, FileContent};
-use clap::ArgMatches;
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use signal_hook::{consts::SIGWINCH, iterator::Signals};
 use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
 use std::sync::mpsc;
@@ -15,7 +15,7 @@ use termion::event::{Event, Key};
 use termion::input::TermRead;
 use tui::style::Color;
 
-pub fn run(matches: &ArgMatches) {
+pub fn run(file_path: PathBuf) {
     // Helper function to extract out the value from a `Result`
     fn handle<T, E: Display>(val: Result<T, E>, err_msg: &str) -> T {
         match val {
@@ -27,7 +27,7 @@ pub fn run(matches: &ArgMatches) {
         }
     }
 
-    let mut app = App::new(matches);
+    let mut app = App::new(file_path);
     let mut term = handle(ui::setup_term(), "failed to setup terminal");
 
     // We start off by drawing the app once, just so that we aren't waiting for a keypress to
@@ -116,7 +116,7 @@ pub struct App {
     // The number of entries that were visible when last displayed
     pub last_entries_height: AtomicUsize,
 
-    pub file_name: String,
+    pub file_path: PathBuf,
     // If we have an entry open, where is the cursor?
     pub main_selected: EntrySelectState,
     // If there's an entry currently being displayed, this gives the index of that entry
@@ -186,9 +186,8 @@ enum Cmd {
 
 impl App {
     /// Initializes the `App` from the given arguments, exiting on error
-    fn new(matches: &ArgMatches) -> Self {
-        let file = matches.value_of("FILE").unwrap();
-        let (entries, maybe_warning) = version::parse(file);
+    fn new(file_path: PathBuf) -> Self {
+        let (entries, maybe_warning) = version::parse(&file_path);
 
         let selected = match maybe_warning {
             None => SelectState::Entries,
@@ -210,7 +209,7 @@ impl App {
             start_entries_row: 0,
             selected_entries_row: 0,
             last_entries_height: AtomicUsize::new(0),
-            file_name: file.to_owned(),
+            file_path,
             main_selected: EntrySelectState::Name,
             displayed_entry_idx: None,
         }
@@ -878,7 +877,7 @@ impl App {
     /// it fails
     fn write(&mut self, return_to_main: bool) -> Result<(), ()> {
         // Try to open the file
-        let res = File::create(&self.file_name).and_then(|mut f| {
+        let res = File::create(&self.file_path).and_then(|mut f| {
             let s = self.entries.write();
             write!(f, "{}", s).and_then(|_| f.flush())
         });

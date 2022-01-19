@@ -2,14 +2,19 @@
 
 use super::print_err_and_exit;
 use crate::version::{CurrentFileContent, FileContent};
-use clap::ArgMatches;
 use std::fs::File;
 use std::io::Write;
+use std::path::PathBuf;
 
-pub fn run(matches: &ArgMatches) {
-    let file_name = matches.value_of("FILE").unwrap();
+#[derive(clap::Args)]
+pub struct Args {
+    /// Sets the file to write to
+    #[clap(name = "FILE")]
+    file_name: PathBuf,
+}
 
-    let mut file = File::create(file_name).unwrap_or_else(print_err_and_exit);
+pub fn run(args: Args) {
+    let mut file = File::create(&args.file_name).unwrap_or_else(print_err_and_exit);
 
     let pwd = rpassword::read_password_from_tty(Some("Please enter an encryption key: "))
         .unwrap_or_else(print_err_and_exit);
@@ -22,8 +27,8 @@ pub fn run(matches: &ArgMatches) {
         .unwrap_or_else(print_err_and_exit);
 
     println!(
-        "Generation successful! Wrote {} bytes to '{}'",
+        "Generation successful! Wrote {} bytes to {:?}",
         as_string.len(),
-        file_name
+        args.file_name,
     );
 }

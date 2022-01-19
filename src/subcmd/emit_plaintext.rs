@@ -2,14 +2,22 @@
 
 use super::print_err_and_exit;
 use crate::version;
-use clap::ArgMatches;
 use std::fs;
+use std::path::PathBuf;
 
-pub fn run(matches: &ArgMatches) {
-    let input_file_name = matches.value_of("INPUT").unwrap();
-    let output_file_name = matches.value_of("OUTPUT").unwrap();
+#[derive(clap::Args)]
+pub struct Args {
+    /// Sets the input file to read from
+    #[clap(short, long, name = "INPUT")]
+    input: PathBuf,
 
-    let (content, _warning) = version::parse(input_file_name);
+    /// Sets the output file to write to
+    #[clap(short, long, name = "OUTPUT")]
+    output: PathBuf,
+}
+
+pub fn run(args: Args) {
+    let (content, _warning) = version::parse(&args.input);
 
     let pwd = rpassword::read_password_from_tty(Some("Please enter the current encryption key: "))
         .unwrap_or_else(print_err_and_exit);
@@ -23,5 +31,5 @@ pub fn run(matches: &ArgMatches) {
     let s = serde_yaml::to_string(&output)
         .expect("unrecoverable error: failed to serialize the plaintext content");
 
-    fs::write(output_file_name, s).unwrap_or_else(print_err_and_exit);
+    fs::write(args.output, s).unwrap_or_else(print_err_and_exit);
 }

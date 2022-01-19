@@ -25,6 +25,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs::read_to_string;
 use std::ops::Range;
+use std::path::Path;
 use std::process::exit;
 use std::time::SystemTime;
 
@@ -177,11 +178,11 @@ pub struct Warning {
 }
 
 /// Parses a `FileContent` from the provided file, exiting the program on failure
-pub fn parse(file: &str) -> (Box<dyn FileContent>, Option<Warning>) {
+pub fn parse(file: &Path) -> (Box<dyn FileContent>, Option<Warning>) {
     let content = match read_to_string(file) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("failed to read file {:?}: {}", file, e);
+            eprintln!("failed to read file {:?}: {}", file.to_string_lossy(), e);
             exit(1);
         }
     };

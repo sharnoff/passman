@@ -2,15 +2,23 @@
 
 use super::print_err_and_exit;
 use crate::version::{CurrentFileContent, FileContent};
-use clap::ArgMatches;
 use std::fs;
+use std::path::PathBuf;
+
+#[derive(clap::Args)]
+pub struct Args {
+    /// Sets the input file to read from
+    #[clap(short, long, name = "INPUT")]
+    input: PathBuf,
+
+    /// Sets the output file to write to
+    #[clap(short, long, name = "OUTPUT")]
+    output: PathBuf,
+}
 
 #[rustfmt::skip]
-pub fn run(matches: &ArgMatches) {
-    let input_file_name = matches.value_of("INPUT").unwrap();
-    let output_file_name = matches.value_of("OUTPUT").unwrap();
-
-    let content_str = fs::read_to_string(input_file_name)
+pub fn run(args: Args) {
+    let content_str = fs::read_to_string(args.input)
         .unwrap_or_else(print_err_and_exit);
 
     let plaintext = serde_yaml::from_str(&content_str)
@@ -22,12 +30,12 @@ pub fn run(matches: &ArgMatches) {
     let encrypted = CurrentFileContent::from_plaintext(pwd, plaintext);
     let output_str = encrypted.write();
 
-    fs::write(output_file_name, &output_str)
+    fs::write(&args.output, &output_str)
         .unwrap_or_else(print_err_and_exit);
 
     println!(
         "Successfully wrote new encrypted file ({} bytes) to '{}'",
         output_str.len(),
-        output_file_name
+        args.output.to_string_lossy()
     );
 }

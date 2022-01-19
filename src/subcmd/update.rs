@@ -2,21 +2,29 @@
 
 use super::print_err_and_exit;
 use crate::version::{self, FileContent};
-use clap::ArgMatches;
 use std::fs::File;
 use std::io::{self, Write};
+use std::path::PathBuf;
 
-pub fn run(matches: &ArgMatches) {
-    let input_file_name = matches.value_of("INPUT").unwrap();
-    let output_file_name = matches.value_of("OUTPUT").unwrap();
+#[derive(clap::Args)]
+pub struct Args {
+    /// Sets the input file to read from
+    #[clap(short, long)]
+    input: PathBuf,
 
-    let (content, _warning) = version::parse(input_file_name);
+    /// Sets the output file to write to
+    #[clap(short, long)]
+    output: PathBuf,
+}
+
+pub fn run(args: Args) {
+    let (content, _warning) = version::parse(&args.input);
 
     let pwd = rpassword::read_password_from_tty(Some("Please enter the encryption key: "))
         .unwrap_or_else(print_err_and_exit);
     let output_content = content.to_current(pwd);
 
-    let () = File::create(output_file_name)
+    let () = File::create(args.output)
         .and_then(|mut f| {
             let s = output_content
                 .map_err(|()| io::Error::new(io::ErrorKind::Other, "wrong decryption key"))?
