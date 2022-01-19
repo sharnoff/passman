@@ -385,15 +385,10 @@ impl App {
                     }
                 }
                 CommandKind::Command { return_to_main }
-                | CommandKind::Decrypt { return_to_main, .. } => {
-                    let return_to_main = *return_to_main;
-                    let value_cloned = value.clone();
-                    drop((kind, value));
-                    let should_continue = self.execute_command(&value_cloned, return_to_main);
-                    if !should_continue {
-                        return false;
-                    }
-                }
+                | CommandKind::Decrypt { return_to_main, .. } => match *return_to_main {
+                    true => self.selected = SelectState::Main,
+                    false => self.selected = SelectState::Entries,
+                },
                 CommandKind::ModifyEntry { .. } => self.selected = SelectState::Main,
             },
             _ => return true,
