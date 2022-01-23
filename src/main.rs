@@ -58,6 +58,16 @@ enum Subcommand {
     #[clap(name = "update")]
     Update(subcmd::update::Args),
 
+    // /// Adds a TOTP (e.g. Google Authenticator) generator to the passwords file
+    // ///
+    // /// Adding an authenticator requires manually entering the secret in plaintext; you will have
+    // /// to obtain this yourself.
+    // ///
+    // /// You will be prompted for the name, issuer, and secret in that order.
+    // ///
+    // /// TOTP secrets are always encrypted.
+    // #[clap(name = "add-totp")]
+    // AddTotp(subcmd::add_totp::Args),
     /// Outputs a plaintext (fully decrypted) version of the file
     ///
     /// This can be used with the from-plaintext subcommand as a roundabout way of changing the

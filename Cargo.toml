@@ -17,6 +17,7 @@ sha2 = "0.9"
 clap = { version = "3.0.10", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
+thiserror = "1.0.30"
 fuzzy-matcher = "0.3"
 chrono = "0.4"
 signal-hook = "0.3"
@@ -24,6 +25,7 @@ termion = "1.5"
 textwrap = "0.14"
 tui = "0.16.0"
 rpassword = "5.0"
+google-authenticator = "0.3"
 
 
 [profile.release]

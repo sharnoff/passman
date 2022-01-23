@@ -27,7 +27,7 @@ pub fn run(args: Args) {
     let () = File::create(args.output)
         .and_then(|mut f| {
             let s = output_content
-                .map_err(|()| io::Error::new(io::ErrorKind::Other, "wrong decryption key"))?
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "decryption failed"))?
                 .write();
             write!(f, "{}", s).and_then(|_| f.flush())
         })

@@ -23,15 +23,21 @@
 //! Those are used by the `parse` function at the bottom of this file.
 
 use serde::{Deserialize, Serialize};
+use std::any::Any;
+use std::fmt::{self, Display, Formatter};
 use std::fs::read_to_string;
 use std::ops::Range;
 use std::path::Path;
 use std::process::exit;
 use std::time::SystemTime;
 
+mod errors;
 mod latest;
 mod v0_2;
 mod v0_3;
+mod v0_4;
+
+pub use errors::*;
 
 /// Helper struct for file contents with an attached key
 ///
@@ -64,7 +70,7 @@ pub trait FileContent {
     /// It's customary for this method to only convert to the next version internally, and instead
     /// rely upon that version's implementation of producing the current file content. This chain
     /// terminates with with the implementation for `CurrentFileContent`, which just returns itself.
-    fn to_current(self: Box<Self>, pwd: String) -> Result<Box<CurrentFileContent>, ()>;
+    fn to_current(self: Box<Self>, pwd: String) -> Result<Box<CurrentFileContent>, DecryptError>;
 
     /// Provides the string that the file content should be written as
     ///
@@ -73,7 +79,7 @@ pub trait FileContent {
     fn write(&self) -> String;
 
     /// Sets the key, returning `Err` if it was invalid
-    fn set_key(&mut self, key: String) -> Result<(), ()>;
+    fn set_key(&mut self, key: String) -> Result<(), DecryptError>;
 
     /// Returns true if there have been changes made to the file without saving
     ///
@@ -112,10 +118,10 @@ pub trait FileContent {
         self.entries_range(0..len)
     }
 
-    /// Adds an empty entry with the given name and returns the value
+    /// Adds an empty entry with the given name and returns its index
     fn add_empty_entry(&mut self, name: String) -> usize;
 
-    /// Removes the specified entry
+    /// Removes the entry at the given index
     fn remove_entry(&mut self, idx: usize);
 }
 
@@ -133,16 +139,12 @@ pub trait EntryRef {
     /// Returns the date + time the entry was last updated
     fn last_update(&self) -> SystemTime;
 
-    /// Returns whether the particular field is protected
-    fn field_protected(&self, idx: usize) -> bool;
-
-    /// Returns the name of the field
-    fn field_name(&self, idx: usize) -> &str;
-
-    /// The value of the field corresponding to the given index, given the key
+    /// Returns a reference to the field with index `idx`
     ///
-    /// This should return `Err` exactly when the key hasn't been set and the field is protected.
-    fn field_value(&self, idx: usize) -> Result<String, ()>;
+    /// ## Panics
+    ///
+    /// This function *should* panic if `idx` is greater than `self.num_fields()`
+    fn field(&self, idx: usize) -> Box<dyn FieldRef + '_>;
 
     /// Returns the number of fields in the entry
     fn num_fields(&self) -> usize;
@@ -156,21 +158,100 @@ pub trait EntryMut: EntryRef {
     /// Sets the tags associated with the entry
     fn set_tags(&mut self, tags: Vec<String>);
 
-    /// Sets the name and value of the field
-    fn set_field(&mut self, idx: usize, name: String, value: String);
+    /// Returns a mutable reference to the field with index `idx`
+    ///
+    /// ## Panics
+    ///
+    /// This function *should* panic if `idx` is greater than `self.num_fields()`
+    fn field_mut(&mut self, idx: usize) -> Box<dyn FieldMut + '_>;
 
-    /// Swaps the encryption of the field
-    fn swap_encryption(&mut self, idx: usize) -> Result<(), ()>;
+    /// Creates a `FieldBuilder` that will (possibly) later be provided back
+    fn field_builder(&self) -> Box<dyn FieldBuilder>;
 
-    /// Adds an unprotected field with the provided name and value
-    fn push_field(&mut self, name: String, value: String);
+    /// Sets the field at the given index, using the result of a previous call to
+    /// `self.field_builder()`
+    ///
+    /// The index may be one greater than the current number of fields, in which case the value
+    /// should be appended.
+    fn set_field(
+        &mut self,
+        idx: usize,
+        builder: Box<dyn FieldBuilder>,
+    ) -> Result<(), SetFieldError>;
 
     /// Removes the given field
     fn remove_field(&mut self, idx: usize);
 }
 
+/// An immutable handle on a single field of an entry
+pub trait FieldRef {
+    /// The name of the field
+    fn name(&self) -> &str;
+
+    /// Returns the type of value inside this field
+    fn value_kind(&self) -> ValueKind;
+
+    /// The value of the field
+    ///
+    /// For TOTP fields, this is expected to perform the necessary calculations and return the
+    /// current OTP.
+    fn value(&self) -> Result<String, GetValueError>;
+
+    /// Returns the "plaintext" value of the field
+    ///
+    /// Unlike `value`, this returns the underlying secret for TOTP fields.
+    fn plaintext_value(&self) -> Result<PlaintextValue, GetValueError>;
+}
+
+/// A mutable handle on a single field of an entry
+pub trait FieldMut: FieldRef {
+    /// Swaps the encryption of the field
+    fn swap_encryption(&mut self) -> Result<(), SwapEncryptionError>;
+}
+
+/// The types of values a field might have
+#[derive(Debug, Copy, Clone)]
+pub enum ValueKind {
+    Basic,
+    Protected,
+    Totp,
+}
+
+impl Display for ValueKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            ValueKind::Basic => f.write_str("Basic"),
+            ValueKind::Protected => f.write_str("Protected"),
+            ValueKind::Totp => f.write_str("TOTP"),
+        }
+    }
+}
+
+/// Helper type for constructing a field
+pub trait FieldBuilder: Any {
+    /// Helper method to recover the original type
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Converts the builder to build a "manual" field
+    fn make_manual(&mut self);
+
+    /// Converts the builder to build a TOTP field
+    fn make_totp(&mut self) -> Result<(), UnsupportedFeature>;
+
+    /// Sets the name of the field
+    fn set_name(&mut self, name: String);
+
+    /// Sets the value of the field
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if there was no previous successful call to the matching `make_*` method
+    /// for the value (`make_manual` or `make_totp`).
+    fn set_value(&mut self, value: PlaintextValue);
+}
+
 /// The latest version of the file content -- the most recent implementor of [`FileContent`]
-pub type CurrentFileContent = Keyed<v0_3::FileContent>;
+pub type CurrentFileContent = Keyed<v0_4::FileContent>;
 
 /// A warning given after opening a file with a particular format version
 pub struct Warning {
@@ -201,8 +282,9 @@ pub fn parse(file: &Path) -> (Box<dyn FileContent>, Option<Warning>) {
     prefix_match!(content.as_str() => {
         "---\nversion: v0.2\n" => (Box::new(v0_2::parse(content)), v0_2::WARNING),
         "---\nversion: v0.3\n" => (Box::new(v0_3::parse(content)), v0_3::WARNING),
+        "---\nversion: v0.4\n" => (Box::new(v0_4::parse(content)), v0_4::WARNING),
         _ => {
-            eprintln!("unrecognized file version, should be one of: ['v0.2', 'v0.3']");
+            eprintln!("unrecognized file version, should be one of: ['v0.2', 'v0.3', 'v0.4']");
             exit(1)
         },
     })
@@ -230,8 +312,13 @@ struct PlaintextEntry {
 #[derive(Serialize, Deserialize)]
 struct PlaintextField {
     name: String,
-    value: String,
-    protected: bool,
+    value: PlaintextValue,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum PlaintextValue {
+    Manual { value: String, protected: bool },
+    Totp { secret: String, issuer: String },
 }
 
 impl PlaintextContent {

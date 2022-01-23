@@ -1,16 +1,20 @@
 use crate::ui;
-use crate::version::{self, FileContent};
+use crate::version::{
+    self, DecryptError, FieldBuilder, FileContent, GetValueError, PlaintextValue,
+    SwapEncryptionError, UnsupportedFeature,
+};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use signal_hook::{consts::SIGWINCH, iterator::Signals};
 use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, Write};
+use std::mem::take;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
 use std::sync::mpsc;
-use std::{mem, thread};
+use std::thread;
 use termion::event::{Event, Key};
 use termion::input::TermRead;
 use tui::style::Color;
@@ -161,13 +165,33 @@ pub enum CommandKind {
     Command {
         return_to_main: bool,
     },
-    ModifyEntry {
-        name: Option<String>,
+    ModifyEntryMeta,
+    ModifyField {
+        // The bulider is represented as an Option so that we can take the value once we're done.
+        // This value will never *actually* equal `None`.
+        builder: Option<Box<dyn FieldBuilder>>,
+        state: ModifyFieldState,
+        value_kind: NewValueKind,
+        old_value: Option<PlaintextValue>,
+        field_idx: usize,
     },
     Decrypt {
         return_to_main: bool,
         redo: bool,
     },
+}
+
+pub enum NewValueKind {
+    Manual,
+    Totp,
+}
+
+pub enum ModifyFieldState {
+    Name,
+    ManualValue { protected: bool },
+    TotpIssuer,
+    // While getting the secret, we need to store the previously-entered 'issuer'
+    TotpSecret { issuer: String },
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -265,10 +289,6 @@ impl App {
             _ => false,
         };
 
-        fn take(s: &mut String) -> String {
-            mem::replace(s, String::new())
-        }
-
         match key {
             Key::Backspace => {
                 value.pop();
@@ -307,41 +327,107 @@ impl App {
                         return false;
                     }
                 }
-                CommandKind::ModifyEntry { name } => {
+                CommandKind::ModifyEntryMeta => {
                     let mut entry = self.entries.entry_mut(self.displayed_entry_idx.unwrap());
-                    let mut changed = true;
                     match self.main_selected {
                         EntrySelectState::Name => entry.set_name(take(value)),
                         EntrySelectState::Tags => {
                             let new_tags = value.split(',').map(String::from).collect();
                             entry.set_tags(new_tags);
                         }
-                        EntrySelectState::Field { idx } => match name.as_mut() {
-                            // If we've already entered the name, then we're done entering the
-                            // value for the field
-                            Some(n) => entry.set_field(idx, take(n), take(value)),
-                            // Otherwise, we should move on to entering the value
-                            None => {
-                                *name = Some(take(value));
-                                *value = entry
-                                    .field_value(idx)
-                                    .unwrap_or_else(|()| ui::PROTECTED_STR.into());
-                                changed = false;
-                            }
-                        },
-                        EntrySelectState::Plus => match name.as_mut() {
-                            Some(n) => entry.push_field(take(n), take(value)),
-                            None => {
-                                *name = Some(take(value));
-                                changed = false;
-                            }
-                        },
+                        // These are handled by `CommandKind::ModifyField` instead:
+                        EntrySelectState::Field { .. } | EntrySelectState::Plus => unreachable!(),
                     }
 
-                    if changed {
-                        self.selected = SelectState::Main;
-                    }
+                    self.selected = SelectState::Main;
                 }
+                CommandKind::ModifyField {
+                    builder,
+                    state,
+                    old_value,
+                    value_kind,
+                    field_idx,
+                } => match state {
+                    ModifyFieldState::Name => {
+                        builder.as_mut().unwrap().set_name(take(value));
+                        match value_kind {
+                            NewValueKind::Manual => {
+                                let mut protected = false;
+                                *value = match old_value {
+                                    // Don't make a protected value unprotected
+                                    Some(PlaintextValue::Manual {
+                                        value: v,
+                                        protected: p,
+                                    }) => {
+                                        protected = *p;
+                                        v.clone()
+                                    }
+                                    _ => "".to_owned(),
+                                };
+                                *state = ModifyFieldState::ManualValue { protected };
+                            }
+                            NewValueKind::Totp => {
+                                // Ask for the issuer first:
+                                *state = ModifyFieldState::TotpIssuer;
+                                *value = match old_value {
+                                    Some(PlaintextValue::Totp { issuer, .. }) => issuer.clone(),
+                                    _ => "".to_owned(),
+                                };
+                            }
+                        }
+                    }
+                    ModifyFieldState::ManualValue { protected } => {
+                        let mut builder = take(builder).unwrap();
+
+                        builder.set_value(PlaintextValue::Manual {
+                            value: take(value),
+                            protected: *protected,
+                        });
+
+                        let mut entry = self.entries.entry_mut(self.displayed_entry_idx.unwrap());
+                        match entry.set_field(*field_idx, builder) {
+                            // If setting the field went ok, we can just return to the entry
+                            Ok(()) => self.selected = SelectState::Main,
+                            Err(e) => {
+                                self.selected = SelectState::PopUp {
+                                    header: "Error: Couldn't set field",
+                                    message: vec![e.to_string()],
+                                    border_color: ui::ERROR_COLOR,
+                                }
+                            }
+                        }
+                    }
+                    ModifyFieldState::TotpIssuer => {
+                        *state = ModifyFieldState::TotpSecret {
+                            issuer: take(value),
+                        };
+                        // Set the secret based on the previous value:
+                        *value = match old_value {
+                            Some(PlaintextValue::Totp { secret, .. }) => secret.clone(),
+                            _ => "".to_owned(),
+                        };
+                    }
+                    ModifyFieldState::TotpSecret { issuer } => {
+                        let mut builder = take(builder).unwrap();
+                        builder.set_value(PlaintextValue::Totp {
+                            issuer: take(issuer),
+                            secret: take(value),
+                        });
+
+                        let mut entry = self.entries.entry_mut(self.displayed_entry_idx.unwrap());
+                        match entry.set_field(*field_idx, builder) {
+                            // If setting the field went ok, we can just return to the entry
+                            Ok(()) => self.selected = SelectState::Main,
+                            Err(e) => {
+                                self.selected = SelectState::PopUp {
+                                    header: "Error: Couldn't set field",
+                                    message: vec![e.to_string()],
+                                    border_color: ui::ERROR_COLOR,
+                                }
+                            }
+                        }
+                    }
+                },
                 CommandKind::Decrypt {
                     return_to_main,
                     redo,
@@ -389,7 +475,9 @@ impl App {
                     true => self.selected = SelectState::Main,
                     false => self.selected = SelectState::Entries,
                 },
-                CommandKind::ModifyEntry { .. } => self.selected = SelectState::Main,
+                CommandKind::ModifyEntryMeta { .. } | CommandKind::ModifyField { .. } => {
+                    self.selected = SelectState::Main
+                }
             },
             _ => return true,
         }
@@ -469,17 +557,75 @@ impl App {
                 return !self.try_quit();
             }
             Cmd::Select => {
-                let entry = self.entries.entry(self.displayed_entry_idx.unwrap());
+                drop(entry); // Remove the existing entry ref, so we can re-borrow as mutable
+                let entry = self.entries.entry_mut(self.displayed_entry_idx.unwrap());
+
+                let kind: CommandKind;
 
                 let value = match self.main_selected {
-                    EntrySelectState::Name => entry.name().into(),
-                    EntrySelectState::Tags => entry.tags().join(","),
-                    EntrySelectState::Field { idx } => entry.field_name(idx).to_owned(),
-                    EntrySelectState::Plus => "".into(),
+                    EntrySelectState::Field { idx } => {
+                        let mut builder = entry.field_builder();
+
+                        let (value_kind, old_value) = match entry.field(idx).plaintext_value() {
+                            Ok(v @ PlaintextValue::Manual { .. }) => {
+                                builder.make_manual();
+                                (NewValueKind::Manual, Some(v))
+                            }
+                            Ok(v @ PlaintextValue::Totp { .. }) => {
+                                builder.make_totp().expect("file already has TOTP fields");
+                                (NewValueKind::Totp, Some(v))
+                            }
+                            Err(e) => {
+                                let mut message = vec![e.to_string()];
+
+                                if let GetValueError::ContentsNotUnlocked = e {
+                                    message.push(ui::DECRYPT_HELP_MSG.to_owned());
+                                }
+
+                                self.selected = SelectState::PopUp {
+                                    header: "Error: Cannot edit field",
+                                    message: vec![e.to_string()],
+                                    border_color: ui::ERROR_COLOR,
+                                };
+                                return true;
+                            }
+                        };
+
+                        kind = CommandKind::ModifyField {
+                            builder: Some(builder),
+                            state: ModifyFieldState::Name,
+                            value_kind,
+                            old_value,
+                            field_idx: idx,
+                        };
+                        entry.field(idx).name().to_owned()
+                    }
+                    EntrySelectState::Plus => {
+                        // Using the "+" button always creates a manual field
+                        let mut builder = entry.field_builder();
+                        builder.make_manual();
+                        kind = CommandKind::ModifyField {
+                            builder: Some(builder),
+                            state: ModifyFieldState::Name,
+                            value_kind: NewValueKind::Manual,
+                            old_value: None,
+                            // "replacing" at index = len is allowed; it adds a field
+                            field_idx: entry.num_fields(),
+                        };
+                        String::new()
+                    }
+                    EntrySelectState::Name => {
+                        kind = CommandKind::ModifyEntryMeta;
+                        entry.name().into()
+                    }
+                    EntrySelectState::Tags => {
+                        kind = CommandKind::ModifyEntryMeta;
+                        entry.tags().join(",")
+                    }
                 };
 
                 self.selected = SelectState::BottomCommand {
-                    kind: CommandKind::ModifyEntry { name: None },
+                    kind,
                     value,
                     as_stars: false,
                 };
@@ -534,8 +680,7 @@ impl App {
                         header: "Contents not decrypted",
                         message: vec![
                             "Cannot swap encryption on this field; the contents have not yet been decrypted.".into(),
-                            "Help: To decrypt the contents of the entries, use ':unlock'"
-                                .into(),
+                            ui::DECRYPT_HELP_MSG.to_owned(),
                         ],
                         border_color: ui::WARNING_COLOR,
                     };
@@ -543,18 +688,21 @@ impl App {
                     return true;
                 }
 
-                if let Err(()) = entry.swap_encryption(field_idx) {
+                if let Err(e) = entry.field_mut(field_idx).swap_encryption() {
+                    let mut message = vec![e.to_string()];
+                    if let SwapEncryptionError::ContentsNotUnlocked = e {
+                        message.push(ui::DECRYPT_HELP_MSG.to_string());
+                    }
+
                     self.selected = SelectState::PopUp {
-                        header: "Decryption error occured",
-                        message: vec![
-                            "This may be due to an invalid key; to re-enter, use ':unlock!'".into(),
-                        ],
+                        header: "Error: Can't swap field encryption",
+                        message,
                         border_color: ui::ERROR_COLOR,
                     };
                 }
             }
 
-            // Add a field
+            // Add a (manual) field
             Key::Char('+') => {
                 // We can delegate the work by simply emulating the processes that already happen
                 // for adding a field - even though this is a bit of a hack, it means we don't need
@@ -562,6 +710,35 @@ impl App {
                 self.main_selected = EntrySelectState::Plus;
                 drop(entry); // Need to explicitly drop this because `Box` has drop glue
                 self.handle_main_cmd(Cmd::Select);
+            }
+
+            // Add a TOTP field
+            Key::Char('t') => {
+                let mut builder = entry.field_builder();
+                match builder.make_totp() {
+                    Err(e @ UnsupportedFeature::Totp) => {
+                        // Add an error pop-up because we couldn't make the builder
+                        self.selected = SelectState::PopUp {
+                            header: "Error: Cannot make new TOTP field",
+                            message: vec![e.to_string()],
+                            border_color: ui::ERROR_COLOR,
+                        };
+                    }
+                    Ok(()) => {
+                        self.selected = SelectState::BottomCommand {
+                            kind: CommandKind::ModifyField {
+                                builder: Some(builder),
+                                state: ModifyFieldState::Name,
+                                value_kind: NewValueKind::Totp,
+                                old_value: None,
+                                // Setting the field at index = len creates a new one
+                                field_idx: entry.num_fields(),
+                            },
+                            value: "".to_owned(),
+                            as_stars: false,
+                        };
+                    }
+                }
             }
             _ => (),
         }
@@ -670,7 +847,7 @@ impl App {
                 self.displayed_entry_idx = Some(new_entry_idx);
                 self.main_selected = EntrySelectState::Name;
                 self.selected = SelectState::BottomCommand {
-                    kind: CommandKind::ModifyEntry { name: None },
+                    kind: CommandKind::ModifyEntryMeta,
                     value: String::new(),
                     as_stars: false,
                 };
@@ -917,9 +1094,9 @@ impl App {
                 true => self.selected = SelectState::Main,
                 false => self.selected = SelectState::Entries,
             },
-            Err(()) => {
+            Err(DecryptError::BadCrypt | DecryptError::BadUtf8) => {
                 self.selected = SelectState::PopUp {
-                    header: "Failed to decrypt",
+                    header: "Error: Failed to decrypt",
                     message: vec![
                         "Could not decrypt the contents; the entered key was incorrect".into(),
                     ],

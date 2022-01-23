@@ -25,7 +25,7 @@ pub fn run(args: Args) {
     let output = content
         .to_current(pwd)
         .and_then(|c| c.to_plaintext())
-        .map_err(|()| "error: wrong decryption key")
+        .map_err(|_| "error: decryption failed")
         .unwrap_or_else(print_err_and_exit);
 
     let s = serde_yaml::to_string(&output)

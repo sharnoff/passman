@@ -1,7 +1,8 @@
 //! Displays the current state of the `App`
 
-use crate::app::{App, CommandKind, EntrySelectState, SelectState};
+use crate::app::{App, CommandKind, EntrySelectState, ModifyFieldState, NewValueKind, SelectState};
 use crate::utils;
+use crate::version::{GetValueError, ValueKind};
 use std::io::{self, Stdout};
 use std::sync::atomic::Ordering::Release;
 use termion::raw::{IntoRawMode, RawTerminal};
@@ -20,6 +21,7 @@ pub const ERROR_COLOR: Color = Color::Red;
 pub const INFO_COLOR: Color = Color::Blue;
 
 pub static PROTECTED_STR: &str = "<Protected>";
+pub static DECRYPT_HELP_MSG: &str = "Help: To decrypt the contents of the entries, use ':unlock'";
 
 const SELECT_STYLE: Style = Style {
     fg: Some(Color::Blue),
@@ -191,17 +193,24 @@ fn render_cmd(f: &mut Frame, rect: Rect, app: &App) {
         SelectState::BottomCommand { kind, .. } => match kind {
             CommandKind::Search { .. } => "Searching entries",
             CommandKind::Command { .. } => "Command input",
-            CommandKind::ModifyEntry { name } => match app.main_selected {
+            CommandKind::ModifyEntryMeta => match app.main_selected {
                 EntrySelectState::Name => "Editing entry name",
                 EntrySelectState::Tags => "Editing entry tags",
-                EntrySelectState::Field { .. } => match name {
-                    None => "Editing field name",
-                    Some(_) => "Editing field value",
-                },
-                EntrySelectState::Plus => match name {
-                    None => "New field name",
-                    Some(_) => "New field value",
-                },
+                EntrySelectState::Field { .. } | EntrySelectState::Plus => unreachable!(),
+            },
+            CommandKind::ModifyField {
+                state, value_kind, ..
+            } => match (state, value_kind) {
+                (ModifyFieldState::Name, NewValueKind::Manual) => "Editing standard field name",
+                (ModifyFieldState::Name, NewValueKind::Totp) => "Editing TOTP field name",
+                (ModifyFieldState::ManualValue { protected: false }, _) => {
+                    "Editing basic field value"
+                }
+                (ModifyFieldState::ManualValue { protected: true }, _) => {
+                    "Editing protected field value"
+                }
+                (ModifyFieldState::TotpIssuer, _) => "Editing TOTP field issuer",
+                (ModifyFieldState::TotpSecret { .. }, _) => "Editing TOTP field secret",
             },
             CommandKind::Decrypt { .. } => "Decryption key",
         },
@@ -303,25 +312,27 @@ fn render_main(f: &mut Frame, rect: Rect, app: &App) {
 
     for idx in 0..entry.num_fields() {
         let is_selected = selected == Some(Field { idx });
-        let is_protected = entry.field_protected(idx);
+        let field = entry.field(idx);
 
-        let field_value = entry.field_value(idx);
-
-        // Only display values if they're unprotected OR protected and selected
-        let value = match (is_protected, is_selected, field_value) {
-            (true, true, Ok(v)) => v,
-            (true, true, Err(())) | (true, false, _) => "<Protected>".to_owned(),
-            (false, _, res) => res.unwrap(),
+        let (prefix, is_protected) = match field.value_kind() {
+            ValueKind::Basic => ("  ", false),
+            ValueKind::Protected => ("🔒", true),
+            ValueKind::Totp => ("⏳", true),
         };
 
-        let prefix = match is_protected {
-            false => "  ",
-            true => "🔒",
+        let value = if is_selected || !is_protected {
+            field.value().unwrap_or_else(|e| match e {
+                GetValueError::ContentsNotUnlocked => PROTECTED_STR.to_owned(),
+                GetValueError::Decrypt(_) => "<BAD CRYPT>".to_owned(),
+                GetValueError::BadTotpSecret => "<BAD TOTP SECRET>".to_owned(),
+            })
+        } else {
+            PROTECTED_STR.to_owned()
         };
 
         text.push(styled(
             prefix,
-            format!("{}: ", entry.field_name(idx)),
+            format!("{}: ", field.name()),
             value,
             is_selected,
         ));
@@ -386,7 +397,7 @@ fn render_status(f: &mut Frame, rect: Rect, app: &App) {
 }
 
 fn render_options(f: &mut Frame, rect: Rect, app: &App) {
-    use CommandKind::{Command, Decrypt, ModifyEntry, Search};
+    use CommandKind::{Command, Decrypt, ModifyEntryMeta, ModifyField, Search};
     use SelectState::{BottomCommand, Entries, Main, PopUp};
 
     let (normal, moves): (&[_], &[_]) = match app.selected {
@@ -412,7 +423,11 @@ fn render_options(f: &mut Frame, rect: Rect, app: &App) {
             ..
         }
         | BottomCommand {
-            kind: ModifyEntry { .. },
+            kind: ModifyEntryMeta { .. },
+            ..
+        }
+        | BottomCommand {
+            kind: ModifyField { .. },
             ..
         }
         | PopUp { .. } => (
@@ -427,11 +442,12 @@ fn render_options(f: &mut Frame, rect: Rect, app: &App) {
                 "Write:        ':w(rite)'",
                 "Write-exit:   ':wq'",
                 " ---- single keys ---- ",
-                "Exit:          'q'",
-                "Search:        '/'",
-                "Delete field:  'd'",
-                "Swap encrypt:  's'",
-                "Add field:     '+'",
+                "Exit:           'q'",
+                "Search:         '/'",
+                "Delete field:   'd'",
+                "Swap encrypt:   's'",
+                "Add field:      '+'",
+                "Add TOTP field: 't'",
             ],
             &[
                 " ---- movement ---- ",
