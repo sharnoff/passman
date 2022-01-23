@@ -31,3 +31,11 @@ keybindings - a list of available commands is on the right-hand side at all time
 Updating an old file can be done with `passman upgrade --input <OLD FILE> --output <NEW FILE>`, and
 there's additional support for producing and using plaintext versions, with the `emit-plaintext` and
 `from-plaintext` subcommands.
+
+## TOTP Fields
+
+In addition to regular values, `passman` also supports TOTP fields (like Google Authenticator). The
+values must currently be entered manually; plenty of guides for extracting the secret keys can be
+found online. I have personally used https://github.com/scito/extract_otp_secret_keys after
+exporting keys from Google Authenticator; I'd assume a similar method would work for new keys as
+well.
