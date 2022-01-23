@@ -345,8 +345,11 @@ macro_rules! impl_field_ref {
                         let unix_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                         // TOTP works with 30-second time slices, 
                         let time_slice = unix_time / 30;
-                        GA_AUTH.get_code(&secret_plaintext, time_slice)
-                            .map_err(|_| GetValueError::BadTotpSecret)
+                        let code = GA_AUTH.get_code(&secret_plaintext, time_slice)
+                            .map_err(|_| GetValueError::BadTotpSecret)?;
+                        let secs_remaining = 30 - unix_time % 30;
+                        crate::utils::send_refresh_tick_after_1_second();
+                        Ok(format!("{code}  (00:{secs_remaining:02} remaining)"))
                     }
                     (_, None) => Err(GetValueError::ContentsNotUnlocked),
                 }

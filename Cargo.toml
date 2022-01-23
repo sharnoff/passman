@@ -26,6 +26,7 @@ textwrap = "0.14"
 tui = "0.16.0"
 rpassword = "5.0"
 google-authenticator = "0.3"
+lazy_static = "1.4.0"
 
 
 [profile.release]

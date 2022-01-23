@@ -385,6 +385,7 @@ dependencies = [
  "clap",
  "fuzzy-matcher",
  "google-authenticator",
+ "lazy_static",
  "rand 0.8.4",
  "rand_core 0.6.3",
  "rpassword",

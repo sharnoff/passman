@@ -4,6 +4,7 @@ use crate::version::{
     SwapEncryptionError, UnsupportedFeature,
 };
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
+use lazy_static::lazy_static;
 use signal_hook::{consts::SIGWINCH, iterator::Signals};
 use std::convert::TryFrom;
 use std::fmt::Display;
@@ -13,7 +14,7 @@ use std::mem::take;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use termion::event::{Event, Key};
 use termion::input::TermRead;
@@ -61,6 +62,11 @@ pub fn run(file_path: PathBuf) {
     }
 }
 
+lazy_static! {
+    pub static ref SIGNAL_TX: Mutex<Option<mpsc::Sender<Option<io::Result<Event>>>>> =
+        Mutex::new(None);
+}
+
 /// Creates an iterator over key events and resizes
 ///
 /// Normal events are encoded as `Some(e)`, while resizes are just `None`.
@@ -79,9 +85,10 @@ fn events() -> io::Result<impl Iterator<Item = Option<io::Result<Event>>>> {
     }
 
     let (tx, rx) = mpsc::channel();
+    *SIGNAL_TX.lock().unwrap() = Some(tx.clone());
     let iter = Iter { rx };
 
-    // We'll spawn two threads to handle sending into the channel. The first will produce events
+    // We'll spawn three threads to handle sending into the channel. The first will produce events
     // from resizes:
     let mut signals = Signals::new(&[SIGWINCH])?;
     let tx_cloned = tx.clone();

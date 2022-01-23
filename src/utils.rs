@@ -1,10 +1,13 @@
 //! Various standalone utilities and helper functions
 
 use chrono::{DateTime, Local};
+use lazy_static::lazy_static;
 use serde::{de::Error, de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Cow;
 use std::fmt;
-use std::time::SystemTime;
+use std::sync::{mpsc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 pub fn format_time(time: SystemTime) -> String {
     let time: DateTime<Local> = time.into();
@@ -66,4 +69,35 @@ impl<'de> Visitor<'de> for Base64VecVisitor {
     fn visit_str<E: Error>(self, s: &str) -> Result<Base64Vec, E> {
         base64::decode(s).map(Base64Vec).map_err(E::custom)
     }
+}
+
+lazy_static! {
+    static ref TIMER_THREAD_TX: Mutex<mpsc::Sender<()>> = Mutex::new(make_timer_thread());
+}
+
+/// Orchestrates sending a timer tick after one second, signalling the app to refresh
+pub fn send_refresh_tick_after_1_second() {
+    let _ = TIMER_THREAD_TX.lock().unwrap().send(());
+}
+
+fn make_timer_thread() -> mpsc::Sender<()> {
+    let (tx, rx) = mpsc::channel();
+
+    let signal_tx = crate::app::SIGNAL_TX
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned()
+        .expect("app hasn't been initialized");
+
+    thread::spawn(move || {
+        while let Ok(()) = rx.recv() {
+            thread::sleep(Duration::from_secs(1));
+            // Handle any other buildup, but don't wait.
+            while let Ok(()) = rx.try_recv() {}
+            let _ = signal_tx.send(None);
+        }
+    });
+
+    tx
 }
