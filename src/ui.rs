@@ -398,39 +398,19 @@ fn render_status(f: &mut Frame, rect: Rect, app: &App) {
 
 fn render_options(f: &mut Frame, rect: Rect, app: &App) {
     use CommandKind::{Command, Decrypt, ModifyEntryMeta, ModifyField, Search};
-    use SelectState::{BottomCommand, Entries, Main, PopUp};
 
+    #[rustfmt::skip]
     let (normal, moves): (&[_], &[_]) = match app.selected {
-        Main
-        | BottomCommand {
-            kind: Search {
-                return_to_main: true,
-                ..
-            },
+        SelectState::Main
+        | SelectState::BottomCommand {
+            kind: Search { return_to_main: true, ..  }
+                | Command { return_to_main: true, ..  }
+                | Decrypt { return_to_main: true, ..  }
+                | ModifyEntryMeta
+                | ModifyField { .. },
             ..
         }
-        | BottomCommand {
-            kind: Command {
-                return_to_main: true,
-            },
-            ..
-        }
-        | BottomCommand {
-            kind: Decrypt {
-                return_to_main: true,
-                ..
-            },
-            ..
-        }
-        | BottomCommand {
-            kind: ModifyEntryMeta { .. },
-            ..
-        }
-        | BottomCommand {
-            kind: ModifyField { .. },
-            ..
-        }
-        | PopUp { .. } => (
+        | SelectState::PopUp { .. } => (
             &[
                 " ----- commands ----- ",
                 "New entry:    ':new'",
@@ -457,25 +437,11 @@ fn render_options(f: &mut Frame, rect: Rect, app: &App) {
                 "right: 'l'",
             ],
         ),
-        Entries
-        | BottomCommand {
-            kind: Search {
-                return_to_main: false,
-                ..
-            },
-            ..
-        }
-        | BottomCommand {
-            kind: Command {
-                return_to_main: false,
-            },
-            ..
-        }
-        | BottomCommand {
-            kind: Decrypt {
-                return_to_main: false,
-                ..
-            },
+        SelectState::Entries
+        | SelectState::BottomCommand {
+            kind: Search { return_to_main: false, ..  }
+                | Command { return_to_main: false }
+                | Decrypt { return_to_main: false, ..  },
             ..
         } => (
             &[

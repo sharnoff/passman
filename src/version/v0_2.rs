@@ -102,45 +102,30 @@ impl super::FileContent for Keyed<FileContent> {
         let key = self.key.as_ref().unwrap();
         let iv = self.content.iv.as_ref();
 
-        let entries = self
-            .content
-            .inner
-            .into_iter()
-            .map(|e| {
-                Ok(PlaintextEntry {
-                    name: e.name,
-                    tags: e.tags,
-                    fields: e
-                        .fields
-                        .into_iter()
-                        .map(|f| {
-                            let (value, protected) = match f.value {
-                                Value::Basic(s) => (s, false),
-                                Value::Protected(bs) => {
-                                    let decrypted = decrypt_string(bs.as_ref(), iv, key)?;
-                                    (decrypted, true)
-                                }
-                            };
+        #[rustfmt::skip]
+        let content = PlaintextContent {
+            last_update: self.content.last_update,
+            entries: self.content.inner.into_iter().map(|e| Ok(PlaintextEntry {
+                name: e.name,
+                tags: e.tags,
+                first_added: e.first_added,
+                last_update: e.last_update,
+                fields: e.fields.into_iter().map(|f| Ok(PlaintextField {
+                    name: f.name,
+                    value: match f.value {
+                        Value::Basic(s) => {
+                            PlaintextValue::Manual { value: s, protected: false }
+                        }
+                        Value::Protected(bs) => {
+                            let value = decrypt_string(bs.as_ref(), iv, key)?;
+                            PlaintextValue::Manual { value, protected: true }
+                        }
+                    },
+                })).collect::<Result<_, _>>()?,
+            })).collect::<Result<_, _>>()?,
+        };
 
-                            Ok(PlaintextField {
-                                name: f.name,
-                                value: PlaintextValue::Manual { value, protected },
-                            })
-                        })
-                        .collect::<Result<_, _>>()?,
-                    first_added: e.first_added,
-                    last_update: e.last_update,
-                })
-            })
-            .collect::<Result<_, _>>()?;
-
-        Ok(Box::new(CurrentFileContent::from_plaintext(
-            pwd,
-            PlaintextContent {
-                last_update: self.content.last_update,
-                entries,
-            },
-        )))
+        Ok(Box::new(CurrentFileContent::from_plaintext(pwd, content)))
     }
 
     fn write(&self) -> String {
